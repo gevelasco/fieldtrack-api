@@ -5,18 +5,22 @@ Dos servicios en el mismo proyecto Railway: **Postgres** + **fieldtrack-api** + 
 ## 1. Postgres
 
 1. Añade el plugin **PostgreSQL** al proyecto.
-2. En el servicio **fieldtrack-api**, referencia las variables del plugin o copia manualmente a los nombres que usa la API:
+2. En el servicio **fieldtrack-api**, conecta Postgres al servicio API (Railway inyecta `PG*` o `DATABASE_URL`).
 
-| Variable API | Origen típico (Railway Postgres) |
-|--------------|----------------------------------|
-| `DB_HOST` | `${{Postgres.PGHOST}}` o host interno |
+**Opción A (recomendada):** variables de referencia con prefijo `DB_`:
+
+| Variable API | Referencia Railway |
+|--------------|-------------------|
+| `DB_HOST` | `${{Postgres.PGHOST}}` |
 | `DB_PORT` | `${{Postgres.PGPORT}}` |
 | `DB_USERNAME` | `${{Postgres.PGUSER}}` |
 | `DB_PASSWORD` | `${{Postgres.PGPASSWORD}}` |
 | `DB_DATABASE` | `${{Postgres.PGDATABASE}}` |
-| `DB_SSL` | `true` (Postgres gestionado / URL pública) |
+| `DB_SSL` | `true` |
 
-No commitees `.env`; todo va en **Variables** del servicio.
+**Opción B:** solo el plugin Postgres referenciado al servicio API (sin `DB_*`). Al arrancar, la API **mapea** `PGPASSWORD` / `DATABASE_URL` → `DB_*` (`config/resolve-db-env.ts`).
+
+No commitees `.env`; en Railway no hay archivo `.env` en runtime.
 
 ## 2. fieldtrack-api
 

@@ -1,3 +1,4 @@
+import { resolveDbEnv } from '../config/resolve-db-env';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
@@ -19,6 +20,7 @@ import EnvConfig from './types/env-config.type';
 const JSON_BODY_LIMIT = '5mb';
 
 async function bootstrap() {
+  resolveDbEnv();
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: false,
   });

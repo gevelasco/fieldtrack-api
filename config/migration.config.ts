@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { typeOrmEntityGlobsFromDir } from '../src/database/typeorm-entity-globs';
 import { typeOrmMigrationGlobsFromDir } from '../src/database/typeorm-migration-globs';
+import { assertDbPasswordPresent, resolveDbEnv } from './resolve-db-env';
 
 const envPath = path.resolve(__dirname, '../.env');
 if (fs.existsSync(envPath)) {
@@ -12,11 +13,8 @@ if (fs.existsSync(envPath)) {
   loadEnv();
 }
 
-if (typeof process.env.DB_PASSWORD !== 'string' || process.env.DB_PASSWORD.length === 0) {
-  throw new Error(
-    'Falta DB_PASSWORD. Copia .env.example a .env:  cp .env.example .env',
-  );
-}
+resolveDbEnv();
+assertDbPasswordPresent();
 
 const configFile = __filename.replace(/\\/g, '/');
 const compiledConfig = configFile.includes('/dist/config/');
