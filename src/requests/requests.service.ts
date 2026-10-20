@@ -7,6 +7,13 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
+import { FileService } from '../common/file/file.service';
+import { REQUEST_DOCUMENT_STORAGE_FOLDER } from '../common/file/storage-folders';
+import {
+  removeStorageKey,
+  resolveStoredFile,
+  uploadToStorage,
+} from '../common/file/stored-file.util';
 import { Member } from '../members/entities/member.entity';
 import { MemberDocument } from '../members/entities/member-document.entity';
 import { activeDocumentSlots, labelForSlot } from '../clubs/club-documents';
@@ -54,6 +61,7 @@ export class RequestsService {
     private readonly dataSource: DataSource,
     private readonly notifications: NotificationsService,
     private readonly clubSettings: ClubSettingsService,
+    private readonly files: FileService,
   ) {}
 
   async list(clubId: number, actor: AppUser, query: ListRequestsQueryDto) {
@@ -459,6 +467,7 @@ export class RequestsService {
       if (!document) {
         throw new NotFoundException('No se encontró el documento.');
       }
+      await removeStorageKey(this.files, document.storageKey);
       await manager.getRepository(ClubRequestDocument).delete({ id: document.id });
       await this.log(manager, current, actor, 'document_removed', `Quitó el documento ${document.fileName}.`);
     });
@@ -481,7 +490,12 @@ export class RequestsService {
     if (!row) {
       throw new NotFoundException('No hay archivo.');
     }
-    return { fileName: row.fileName, contentType: row.contentType, content: row.content };
+    return resolveStoredFile(this.files, {
+      fileName: row.fileName,
+      contentType: row.contentType,
+      storageKey: row.storageKey,
+      content: row.content,
+    });
   }
 
   async remove(clubId: number, requestId: number, actor: AppUser) {
@@ -544,13 +558,20 @@ export class RequestsService {
   }
 
   private async storeDocument(manager: EntityManager, request: ClubRequest, actor: AppUser, file: DecodedRequestFile) {
+    const uploaded = await uploadToStorage(
+      this.files,
+      REQUEST_DOCUMENT_STORAGE_FOLDER,
+      { content: file.content, contentType: file.contentType, size: file.content.length },
+      file.fileName,
+    );
     await manager.getRepository(ClubRequestDocument).insert({
       clubId: request.clubId,
       requestId: request.id,
       fileName: file.fileName,
-      contentType: file.contentType,
-      sizeBytes: String(file.content.length),
-      content: file.content,
+      contentType: uploaded.contentType,
+      sizeBytes: uploaded.sizeBytes,
+      storageKey: uploaded.storageKey,
+      content: null,
       uploadedByUserId: actor.id,
     });
     await this.log(manager, request, actor, 'document_added', `Adjuntó el documento ${file.fileName}.`);

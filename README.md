@@ -88,6 +88,10 @@ El contenedor `api` espera Postgres, ejecuta migraciones y arranca Nest.
 
 → **[docs/ops-prd.md](docs/ops-prd.md)** — secrets, HTTPS, logs, backups, smoke checklist.
 
+## Railway
+
+Variables `DB_*`, `ORIGIN`, JWT y `NODE_ENV=production` en el panel; start **`npm start`** (migraciones + API). Guía paso a paso: **[docs/deploy-railway.md](docs/deploy-railway.md)**.
+
 ## Health
 
 `GET /` (público) → `{ service, status, timestamp }`.

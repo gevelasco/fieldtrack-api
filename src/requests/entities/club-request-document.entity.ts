@@ -27,8 +27,11 @@ export class ClubRequestDocument {
   @Column({ name: 'size_bytes', type: 'bigint' })
   sizeBytes: string;
 
-  @Column({ type: 'bytea', select: false })
-  content: Buffer;
+  @Column({ name: 'storage_key', type: 'text', nullable: true })
+  storageKey: string | null;
+
+  @Column({ type: 'bytea', nullable: true, select: false })
+  content: Buffer | null;
 
   @Column({ name: 'uploaded_by_user_id', type: 'int' })
   uploadedByUserId: number;

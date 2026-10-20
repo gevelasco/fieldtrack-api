@@ -5,6 +5,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { FileModule } from './common/file/file.module';
 import { ObservabilityModule } from './common/observability/observability.module';
 import { AuthModule } from './auth/auth.module';
 import { ClubsModule } from './clubs/clubs.module';
@@ -33,6 +34,7 @@ import EnvConfig from './types/env-config.type';
       },
     ]),
     ObservabilityModule,
+    FileModule,
     AuthModule,
     ClubsModule,
     SessionModule,

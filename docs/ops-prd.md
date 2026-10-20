@@ -15,8 +15,10 @@ No commitees `.env`. En el host / Railway:
 | `DB_SSL` | `true` en cloud |
 | `ALERT_WEBHOOK_URL` | (opcional) webhook 5xx |
 | `ENABLE_SWAGGER` | omitir o `false` |
+| `RW_*` / AWS bucket | **Producción:** credenciales del Railway Bucket (documentos socios/solicitudes) |
 
-El boot falla en `production` si faltan secrets o `ORIGIN` es `*` / localhost.
+El boot falla en `production` si faltan secrets o `ORIGIN` es `*` / localhost.  
+Sin bucket configurado, **subir** documentos responde 503; **descargar** sigue funcionando para filas legacy en Postgres (`bytea`).
 
 ## 2. HTTPS y proxy
 
@@ -37,9 +39,16 @@ npm run db:backup:verify
 
 Backups en `./backups/fieldtrack-*.sql.gz` (schema `fieldtrack` + `migrations_list`).
 
-## 5. Smoke deploy
+## 5. Railway
+
+Mismo esquema que TerminalOps: variables en el panel (no `.env` en repo), `npm start` en API y FE, Postgres plugin → `DB_*`.
+
+→ **[deploy-railway.md](./deploy-railway.md)**
+
+## 6. Smoke deploy
 
 1. Variables PRD correctas  
-2. `GET /` → 200  
-3. Migraciones aplicadas (log del entrypoint)  
-4. CORS desde el dominio FE  
+2. `DB_SSL=true` si aplica  
+3. `GET /` → 200  
+4. Migraciones aplicadas (log de `migrate.js` al arrancar)  
+5. CORS desde el dominio FE  

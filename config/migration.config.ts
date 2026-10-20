@@ -47,6 +47,8 @@ const dataSource = new DataSource({
   }),
   migrationsTableName: 'migrations_list',
   migrationsTransactionMode: 'each',
+  ssl:
+    process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
 });
 
 export default dataSource;

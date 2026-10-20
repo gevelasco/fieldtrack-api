@@ -58,6 +58,9 @@ export class MemberWeapon {
   @Column({ name: 'sheet_size_bytes', type: 'bigint', nullable: true })
   sheetSizeBytes: string | null;
 
+  @Column({ name: 'sheet_storage_key', type: 'text', nullable: true })
+  sheetStorageKey: string | null;
+
   @Column({ name: 'sheet_content', type: 'bytea', nullable: true, select: false })
   sheetContent: Buffer | null;
 

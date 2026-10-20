@@ -29,6 +29,9 @@ export class MemberPeta {
   @Column({ name: 'size_bytes', type: 'bigint', nullable: true })
   sizeBytes: string | null;
 
+  @Column({ name: 'storage_key', type: 'text', nullable: true })
+  storageKey: string | null;
+
   @Column({ type: 'bytea', nullable: true, select: false })
   content: Buffer | null;
 

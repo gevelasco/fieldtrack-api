@@ -8,6 +8,17 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
+import { FileService } from '../common/file/file.service';
+import {
+  MEMBER_DOCUMENT_STORAGE_FOLDER,
+  MEMBER_PETA_STORAGE_FOLDER,
+  MEMBER_WEAPON_SHEET_STORAGE_FOLDER,
+} from '../common/file/storage-folders';
+import {
+  removeStorageKey,
+  resolveStoredFile,
+  uploadToStorage,
+} from '../common/file/stored-file.util';
 import { hashPassword } from '../common/hash-password';
 import { assertStaffModuleAccess } from '../clubs/staff-access';
 import { Club } from '../clubs/entities/club.entity';
@@ -72,6 +83,7 @@ export class MembersService {
     private readonly dataSource: DataSource,
     private readonly notifications: NotificationsService,
     private readonly config: ConfigService<EnvConfig>,
+    private readonly files: FileService,
   ) {}
 
   async search(clubId: number, query: ListMembersQueryDto) {
@@ -520,7 +532,12 @@ export class MembersService {
       .andWhere('member.id = :memberId', { memberId })
       .andWhere('document.slot = :slot', { slot })
       .getOne();
-    return fileOrThrow(row?.fileName, row?.contentType, row?.content);
+    return resolveStoredFile(this.files, {
+      fileName: row?.fileName,
+      contentType: row?.contentType,
+      storageKey: row?.storageKey,
+      content: row?.content,
+    });
   }
 
   async readSheet(clubId: number, memberId: number, weaponId: number) {
@@ -531,7 +548,12 @@ export class MembersService {
       .andWhere('weapon.memberId = :memberId', { memberId })
       .andWhere('weapon.id = :weaponId', { weaponId })
       .getOne();
-    return fileOrThrow(row?.sheetFileName, row?.sheetContentType, row?.sheetContent);
+    return resolveStoredFile(this.files, {
+      fileName: row?.sheetFileName,
+      contentType: row?.sheetContentType,
+      storageKey: row?.sheetStorageKey,
+      content: row?.sheetContent,
+    });
   }
 
   async readPeta(clubId: number, memberId: number, permitType: string) {
@@ -543,7 +565,12 @@ export class MembersService {
       .andWhere('peta.permitType = :permitType', { permitType })
       .andWhere('peta.isCurrent = true')
       .getOne();
-    return fileOrThrow(row?.fileName, row?.contentType, row?.content);
+    return resolveStoredFile(this.files, {
+      fileName: row?.fileName,
+      contentType: row?.contentType,
+      storageKey: row?.storageKey,
+      content: row?.content,
+    });
   }
 
   async readPetaById(clubId: number, memberId: number, petaId: number, actor: AppUser) {
@@ -560,7 +587,12 @@ export class MembersService {
     if (actor.role === 'socio' && !row.isCurrent) {
       throw new ForbiddenException('No puedes descargar un PETA anterior.');
     }
-    return fileOrThrow(row.fileName, row.contentType, row.content);
+    return resolveStoredFile(this.files, {
+      fileName: row.fileName,
+      contentType: row.contentType,
+      storageKey: row.storageKey,
+      content: row.content,
+    });
   }
 
   private async openSocioAccount(
@@ -657,6 +689,9 @@ export class MembersService {
     const slots = new Set<string>(payloads.map((item) => item.slot));
     if (!createOnly) {
       const removed = existing.filter((item) => !slots.has(item.slot));
+      for (const row of removed) {
+        await removeStorageKey(this.files, row.storageKey);
+      }
       if (removed.length > 0) {
         await documents.remove(removed);
       }
@@ -674,11 +709,20 @@ export class MembersService {
         continue;
       }
       const loadedOn = payload.loadedOn ?? todayIso();
+      const name = payload.fileName?.trim() || fileNameOf(payload);
+      const uploaded = await uploadToStorage(
+        this.files,
+        MEMBER_DOCUMENT_STORAGE_FOLDER,
+        file,
+        name,
+      );
       if (current) {
-        current.fileName = payload.fileName?.trim() || fileNameOf(payload);
-        current.contentType = file.contentType;
-        current.sizeBytes = String(file.size);
-        current.content = file.content;
+        await removeStorageKey(this.files, current.storageKey);
+        current.fileName = name;
+        current.contentType = uploaded.contentType;
+        current.sizeBytes = uploaded.sizeBytes;
+        current.storageKey = uploaded.storageKey;
+        current.content = null;
         current.loadedOn = loadedOn;
         await documents.save(current);
       } else {
@@ -686,10 +730,11 @@ export class MembersService {
           documents.create({
             memberId,
             slot: payload.slot,
-            fileName: payload.fileName?.trim() || 'archivo',
-            contentType: file.contentType,
-            sizeBytes: String(file.size),
-            content: file.content,
+            fileName: name,
+            contentType: uploaded.contentType,
+            sizeBytes: uploaded.sizeBytes,
+            storageKey: uploaded.storageKey,
+            content: null,
             loadedOn,
           }),
         );
@@ -722,7 +767,7 @@ export class MembersService {
       if (current) {
         kept.add(current.id);
         Object.assign(current, fields);
-        applySheet(current, payload.sheet, file);
+        await applyWeaponSheet(this.files, current, payload.sheet, file);
         await weapons.save(current);
       } else {
         const created = weapons.create({
@@ -732,13 +777,17 @@ export class MembersService {
           sheetFileName: null,
           sheetContentType: null,
           sheetSizeBytes: null,
+          sheetStorageKey: null,
           sheetContent: null,
         });
-        applySheet(created, payload.sheet, file);
+        await applyWeaponSheet(this.files, created, payload.sheet, file);
         await weapons.save(created);
       }
     }
     const removed = existing.filter((item) => !kept.has(item.id));
+    for (const row of removed) {
+      await removeStorageKey(this.files, row.sheetStorageKey);
+    }
     if (removed.length > 0) {
       await weapons.remove(removed);
     }
@@ -777,15 +826,22 @@ export class MembersService {
           current.supersededOn = payload.loadedOn;
           await petas.save(current);
         }
+        const uploaded = await uploadToStorage(
+          this.files,
+          MEMBER_PETA_STORAGE_FOLDER,
+          file,
+          payload.fileName.trim(),
+        );
         await petas.save(
           petas.create({
             clubId,
             memberId,
             permitType: payload.permitType,
             fileName: payload.fileName.trim(),
-            contentType: file.contentType,
-            sizeBytes: String(file.size),
-            content: file.content,
+            contentType: uploaded.contentType,
+            sizeBytes: uploaded.sizeBytes,
+            storageKey: uploaded.storageKey,
+            content: null,
             loadedOn: payload.loadedOn,
             isCurrent: true,
             supersededOn: null,
@@ -820,15 +876,18 @@ function weaponFields(payload: WeaponPayloadDto) {
   };
 }
 
-function applySheet(
+async function applyWeaponSheet(
+  fileService: FileService,
   weapon: MemberWeapon,
   sheet: FilePayloadDto | null | undefined,
   file: DecodedFile | null,
-): void {
+): Promise<void> {
   if (sheet === null) {
+    await removeStorageKey(fileService, weapon.sheetStorageKey);
     weapon.sheetFileName = null;
     weapon.sheetContentType = null;
     weapon.sheetSizeBytes = null;
+    weapon.sheetStorageKey = null;
     weapon.sheetContent = null;
     return;
   }
@@ -836,11 +895,20 @@ function applySheet(
     return;
   }
   weapon.sheetFileName = sheet.fileName.trim();
-  if (file) {
-    weapon.sheetContentType = file.contentType;
-    weapon.sheetSizeBytes = String(file.size);
-    weapon.sheetContent = file.content;
+  if (!file) {
+    return;
   }
+  await removeStorageKey(fileService, weapon.sheetStorageKey);
+  const uploaded = await uploadToStorage(
+    fileService,
+    MEMBER_WEAPON_SHEET_STORAGE_FOLDER,
+    file,
+    sheet.fileName.trim(),
+  );
+  weapon.sheetContentType = uploaded.contentType;
+  weapon.sheetSizeBytes = uploaded.sizeBytes;
+  weapon.sheetStorageKey = uploaded.storageKey;
+  weapon.sheetContent = null;
 }
 
 interface DecodedFile {
@@ -880,17 +948,6 @@ function requiredText(value: string, label: string): string {
     throw new BadRequestException(`${label} es obligatorio.`);
   }
   return trimmed;
-}
-
-function fileOrThrow(fileName: string | null | undefined, contentType: string | null | undefined, content: Buffer | null | undefined) {
-  if (!fileName || !content) {
-    throw new NotFoundException('No hay archivo.');
-  }
-  return {
-    fileName,
-    contentType: contentType || 'application/octet-stream',
-    content,
-  };
 }
 
 function paymentSlices(member: Member) {
