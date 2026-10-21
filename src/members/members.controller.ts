@@ -73,6 +73,13 @@ export class MembersController {
     return this.members.create(actor.club.id, actor.user, dto);
   }
 
+  @Get(':memberId')
+  async one(@Param('memberId', ParseIntPipe) memberId: number) {
+    const actor = await this.session.current();
+    assertStaffModuleAccess(actor.user, 'members', 'view');
+    return this.members.findOne(actor.club.id, memberId);
+  }
+
   @Get(':memberId/documents/:slot/file')
   async documentFile(
     @Param('memberId', ParseIntPipe) memberId: number,

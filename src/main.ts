@@ -42,6 +42,18 @@ async function bootstrap() {
   });
 
   app.set('trust proxy', 1);
+
+  const origins = parseCorsOrigins(
+    configService.get<string>('ORIGIN', { infer: true }),
+  );
+  app.enableCors({
+    origin: origins.length === 1 ? origins[0] : origins,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+    optionsSuccessStatus: 204,
+    credentials: false,
+  });
+
   app.use(
     helmet({
       contentSecurityPolicy: false,
@@ -52,15 +64,6 @@ async function bootstrap() {
 
   app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
   app.useBodyParser('urlencoded', { limit: JSON_BODY_LIMIT, extended: true });
-
-  const origins = parseCorsOrigins(
-    configService.get<string>('ORIGIN', { infer: true }),
-  );
-  app.enableCors({
-    origin: origins.length === 1 ? origins[0] : origins,
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
-    credentials: false,
-  });
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -99,7 +102,9 @@ async function bootstrap() {
   const port = configService.get<number>('PORT') ?? 4001;
   await app.listen(port);
   // eslint-disable-next-line no-console
-  console.log(`FieldTrack API listening on port ${port} (env=${nodeEnv || 'local'})`);
+  console.log(
+    `FieldTrack API listening on port ${port} (env=${nodeEnv || 'local'}, cors=${origins.join('|')})`,
+  );
   if (enableSwagger) {
     // eslint-disable-next-line no-console
     console.log(`Swagger UI: /api`);

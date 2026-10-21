@@ -3,6 +3,26 @@ import dataSource from '../config/migration.config';
 const MIGRATION_LOCK_KEY = 74_028_001;
 const MIGRATION_LOCK_TIMEOUT_MS = 90_000;
 
+/** Alinea el esquema con S3 aunque falte registrar una migración en prod. */
+async function ensureObjectStorageSchema(): Promise<void> {
+  await dataSource.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'fieldtrack'
+          AND table_name = 'club_request_documents'
+          AND column_name = 'content'
+          AND is_nullable = 'NO'
+      ) THEN
+        ALTER TABLE fieldtrack.club_request_documents
+          ALTER COLUMN content DROP NOT NULL;
+      END IF;
+    END $$;
+  `);
+}
+
 async function acquireMigrationLock(): Promise<boolean> {
   const deadline = Date.now() + MIGRATION_LOCK_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -36,6 +56,7 @@ async function main() {
               .map((m) => m.name)
               .join(', ')}`,
       );
+      await ensureObjectStorageSchema();
     } finally {
       await dataSource.query(`SELECT pg_advisory_unlock($1)`, [MIGRATION_LOCK_KEY]);
     }

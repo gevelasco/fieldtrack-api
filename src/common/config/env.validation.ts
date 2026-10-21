@@ -76,10 +76,18 @@ export function assertProductionEnv(
   );
 }
 
+function normalizeOrigin(origin: string): string {
+  const trimmed = origin.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  return trimmed.replace(/\/+$/, '');
+}
+
 export function parseCorsOrigins(originEnv: string | undefined): string[] {
   const raw = originEnv?.trim() || 'http://localhost:4201';
   return raw
     .split(',')
-    .map((o) => o.trim())
+    .map((o) => normalizeOrigin(o))
     .filter((o) => o.length > 0 && o !== '*');
 }
