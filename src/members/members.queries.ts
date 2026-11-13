@@ -184,8 +184,18 @@ export async function memberSummary(
      FROM fieldtrack.members WHERE club_id = $1`,
     [clubId],
   );
-  const [weapons]: Array<{ total: number; permits: number }> = await manager.query(
-    `SELECT count(*)::int AS total, count(*) FILTER (WHERE has_peta)::int AS permits
+  const [weapons]: Array<{
+    total: number;
+    without_sheet: number;
+    permits: number;
+    hunting_permits: number;
+    sport_permits: number;
+  }> = await manager.query(
+    `SELECT count(*)::int AS total,
+            count(*) FILTER (WHERE sheet_file_name IS NULL)::int AS without_sheet,
+            count(*) FILTER (WHERE has_peta)::int AS permits,
+            count(*) FILTER (WHERE has_peta AND modality = 'caceria')::int AS hunting_permits,
+            count(*) FILTER (WHERE has_peta AND modality = 'tiro-deportivo')::int AS sport_permits
      FROM fieldtrack.member_weapons WHERE club_id = $1`,
     [clubId],
   );
@@ -201,7 +211,12 @@ export async function memberSummary(
   return {
     members: members?.total ?? 0,
     weapons: weapons?.total ?? 0,
+    weaponsWithoutSheet: weapons?.without_sheet ?? 0,
     permits: weapons?.permits ?? 0,
+    permitsByModality: {
+      caceria: weapons?.hunting_permits ?? 0,
+      'tiro-deportivo': weapons?.sport_permits ?? 0,
+    },
     byMembership: {
       'tiro-deportivo': members?.sport ?? 0,
       caza: members?.hunting ?? 0,

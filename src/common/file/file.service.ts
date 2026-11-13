@@ -268,7 +268,7 @@ export class FileService {
     const originalName = sanitize(decodeURIComponent(file?.originalname ?? ''), {
       replacement: '-',
     });
-    const extension = originalName?.split('.').pop() ?? '';
+    const extension = safeExtension(originalName, file?.mimetype);
     const name = `${String(randomUUID())}.${extension}`;
     return {
       path: folder,
@@ -286,7 +286,7 @@ export class FileService {
       Bucket: bucket,
       Key: name,
       Body: file,
-      ContentType: mimetype,
+      ContentType: safeContentType(mimetype),
       ContentDisposition: 'inline',
     };
 
@@ -294,7 +294,7 @@ export class FileService {
       return await this.getS3Instance().upload(params).promise();
     } catch (e) {
       this.logger.error(
-        'Error uploading s3 file',
+        `Error uploading s3 file (key=${params.Key}, contentType=${params.ContentType}, bytes=${file.length})`,
         e instanceof Error ? e.stack : e,
       );
       throw new HttpException(
@@ -303,4 +303,27 @@ export class FileService {
       );
     }
   }
+}
+
+const EXTENSION_BY_TYPE: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/heic': 'heic',
+};
+
+/** La llave S3 debe ser ASCII simple: nombres sin punto o con acentos rompen la firma en Tigris. */
+function safeExtension(originalName: string, mimetype: string | undefined): string {
+  const dot = originalName.lastIndexOf('.');
+  const fromName = dot > 0 ? originalName.slice(dot + 1).toLowerCase() : '';
+  if (/^[a-z0-9]{1,8}$/.test(fromName)) {
+    return fromName;
+  }
+  return EXTENSION_BY_TYPE[(mimetype ?? '').toLowerCase()] ?? 'bin';
+}
+
+function safeContentType(mimetype: string | undefined): string {
+  const value = (mimetype ?? '').trim();
+  return /^[\x21-\x7e]+\/[\x21-\x7e]+$/.test(value) ? value : 'application/octet-stream';
 }

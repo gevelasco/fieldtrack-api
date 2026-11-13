@@ -124,7 +124,7 @@ export function mapMember(
     weapons: (member.weapons ?? []).map(mapWeapon),
     petas: sortPetas(member.petas ?? [])
       .filter((peta) => includePetaHistory || peta.isCurrent !== false)
-      .map(mapPeta),
+      .map((peta) => mapPeta(peta, calendar)),
     documents: (member.documents ?? []).map(mapDocument),
     payments,
     pendingPeriods: pending,
@@ -178,14 +178,22 @@ function sortPetas(petas: MemberPeta[]): MemberPeta[] {
   });
 }
 
-export function mapPeta(peta: MemberPeta) {
+/** Un PETA vence al cerrar el periodo del rubro (cacería o tiro deportivo) en el que se cargó. */
+export function petaExpiresOn(permitType: string, loadedOn: string, calendar: MembershipCalendar): string {
+  const rubro: MembershipCode = permitType === 'caceria' ? 'caza' : 'tiro-deportivo';
+  return periodForStart(rubro, calendar, loadedOn).end;
+}
+
+export function mapPeta(peta: MemberPeta, calendar: MembershipCalendar) {
+  const loadedOn = asDate(peta.loadedOn);
   return {
     id: peta.id,
     permitType: peta.permitType,
     fileName: peta.fileName,
     contentType: peta.contentType,
     sizeBytes: peta.sizeBytes == null ? null : Number(peta.sizeBytes),
-    loadedOn: asDate(peta.loadedOn),
+    loadedOn,
+    expiresOn: petaExpiresOn(peta.permitType, loadedOn, calendar),
     isCurrent: peta.isCurrent !== false,
     supersededOn: peta.supersededOn ? asDate(peta.supersededOn) : null,
   };

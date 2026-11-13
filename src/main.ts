@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import compression from 'compression';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import {
@@ -60,6 +61,7 @@ async function bootstrap() {
       crossOriginResourcePolicy: { policy: 'cross-origin' },
     }),
   );
+  app.use(compression());
   app.use(requestIdMiddleware);
 
   app.useBodyParser('json', { limit: JSON_BODY_LIMIT });

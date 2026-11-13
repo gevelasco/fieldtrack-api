@@ -47,19 +47,25 @@ export class SessionService {
     if (!user) {
       throw new UnauthorizedException('Inicia sesión.');
     }
-    const club = await this.clubs.findOne({ where: { id: user.clubId } });
+    const [club, theme, memberNumber] = await Promise.all([
+      this.clubs.findOne({ where: { id: user.clubId } }),
+      this.themeOf(user.id),
+      this.rawMemberNumberOf(user),
+    ]);
     if (!club) {
       throw new NotFoundException('No hay un club para esta sesión.');
     }
     return {
       user,
       club,
-      theme: await this.themeOf(user.id),
-      memberNumber: await this.memberNumberOf(user, club),
+      theme,
+      memberNumber: memberNumber
+        ? displayMemberNumber(memberNumber, club.memberNumberPrefix) || null
+        : null,
     };
   }
 
-  private async memberNumberOf(user: AppUser, club: Club): Promise<string | null> {
+  private async rawMemberNumberOf(user: AppUser): Promise<string | null> {
     if (user.role !== 'socio') {
       return null;
     }
@@ -67,8 +73,7 @@ export class SessionService {
       where: { clubId: user.clubId, userId: user.id },
       select: ['id', 'memberNumber'],
     });
-    const formatted = displayMemberNumber(member?.memberNumber, club.memberNumberPrefix);
-    return formatted || null;
+    return member?.memberNumber ?? null;
   }
 
   async updateProfile(userId: number, dto: UpdateProfileDto): Promise<AppUser> {
