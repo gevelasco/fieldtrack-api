@@ -52,6 +52,7 @@ import {
   formatPesos,
   mapMember,
   memberDisplayName,
+  modalityAllowsPeta,
 } from './member.mapper';
 import {
   firstPaymentDate,
@@ -871,7 +872,7 @@ function weaponFields(payload: WeaponPayloadDto) {
     serialNumber: (payload.serialNumber ?? '').trim().toLocaleUpperCase('es-MX'),
     platform: payload.platform,
     modality: payload.modality,
-    hasPeta: payload.hasPeta,
+    hasPeta: modalityAllowsPeta(payload.modality) && payload.hasPeta,
     registeredOn: payload.registeredOn,
   };
 }

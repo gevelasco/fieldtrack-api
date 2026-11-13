@@ -14,7 +14,10 @@ export type RequestEventKind =
   | 'document_removed'
   | 'removed'
   | 'member_submitted'
-  | 'comment_added';
+  | 'comment_added'
+  | 'item_uploaded'
+  | 'item_approved'
+  | 'item_rejected';
 
 @Entity({ schema: FIELDTRACK_SCHEMA, name: 'club_request_events' })
 export class ClubRequestEvent {

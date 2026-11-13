@@ -119,6 +119,7 @@ export interface OpenMemberRequest {
   title: string;
   topic: string;
   documentSlots: string[];
+  weaponIds: number[];
 }
 
 /** Solicitudes nuevas o en proceso de cada socio, para la columna del padrón. */
@@ -138,8 +139,9 @@ export async function openRequestsByMember(
     title: string;
     topic: string;
     document_slots: string[];
+    weapon_ids: number[];
   }> = await manager.query(
-    `SELECT id, member_id, number, title, topic, document_slots
+    `SELECT id, member_id, number, title, topic, document_slots, weapon_ids
      FROM fieldtrack.club_requests
      WHERE club_id = $1 AND member_id = ANY($2::int[])
        AND removed_at IS NULL AND status <> 'completed'
@@ -154,6 +156,7 @@ export async function openRequestsByMember(
       title: row.title,
       topic: row.topic,
       documentSlots: row.document_slots ?? [],
+      weaponIds: row.weapon_ids ?? [],
     });
     byMember.set(row.member_id, list);
   }

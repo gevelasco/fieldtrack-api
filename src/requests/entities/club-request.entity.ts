@@ -17,8 +17,11 @@ import { ClubRequestEvent } from './club-request-event.entity';
 
 export type RequestKind = 'member' | 'internal';
 export type RequestStatus = 'new' | 'in_progress' | 'completed';
-/** `member_documents`: documentos que faltan; `document_renewal`: un documento ya cargado que debe renovarse. */
-export type RequestTopic = 'general' | 'member_documents' | 'document_renewal';
+/**
+ * `member_documents`: documentos que faltan; `document_renewal`: un documento ya cargado que debe renovarse;
+ * `weapon_sheets`: hojas de registro de armas que faltan.
+ */
+export type RequestTopic = 'general' | 'member_documents' | 'document_renewal' | 'weapon_sheets';
 
 @Entity({ schema: FIELDTRACK_SCHEMA, name: 'club_requests' })
 export class ClubRequest {
@@ -57,6 +60,10 @@ export class ClubRequest {
   /** Expediente del socio que se le pidió subir. */
   @Column({ name: 'document_slots', type: 'text', array: true, default: () => "'{}'" })
   documentSlots: string[];
+
+  /** Armas del socio cuya hoja de registro se pidió (`weapon_sheets`). */
+  @Column({ name: 'weapon_ids', type: 'int', array: true, default: () => "'{}'" })
+  weaponIds: number[];
 
   @Column({ name: 'created_by_user_id', type: 'int' })
   createdByUserId: number;

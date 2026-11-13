@@ -15,6 +15,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { assertStaffModuleAccess } from '../clubs/staff-access';
 import { RequestsService } from '../requests/requests.service';
 import { SessionService } from '../session/session.service';
+import { AppUser } from '../users/entities/app-user.entity';
 import {
   CreateMemberDto,
   ListMembersQueryDto,
@@ -129,7 +130,8 @@ export class MembersController {
   ) {
     const actor = await this.session.current();
     assertStaffModuleAccess(actor.user, 'members', 'write');
-    return this.members.updateProfile(actor.club.id, memberId, actor.user, dto);
+    const member = await this.members.updateProfile(actor.club.id, memberId, actor.user, dto);
+    return this.withSettledRequests(actor.club.id, memberId, actor.user, member);
   }
 
   @Put(':memberId/weapons')
@@ -139,7 +141,22 @@ export class MembersController {
   ) {
     const actor = await this.session.current();
     assertStaffModuleAccess(actor.user, 'members', 'write');
-    return this.members.replaceWeapons(actor.club.id, memberId, actor.user, dto);
+    const member = await this.members.replaceWeapons(actor.club.id, memberId, actor.user, dto);
+    return this.withSettledRequests(actor.club.id, memberId, actor.user, member);
+  }
+
+  /** Cierra las solicitudes cuyos archivos ya quedaron cargados y devuelve el socio al día. */
+  private async withSettledRequests(
+    clubId: number,
+    memberId: number,
+    user: AppUser,
+    member: Awaited<ReturnType<MembersService['findOne']>>,
+  ) {
+    const closedRequests = await this.requests.closeSettledForMember(clubId, memberId, user);
+    if (closedRequests.length === 0) {
+      return { ...member, closedRequests };
+    }
+    return { ...(await this.members.findOne(clubId, memberId)), closedRequests };
   }
 
   @Put(':memberId/petas')
@@ -180,6 +197,15 @@ export class MembersController {
     const actor = await this.session.current();
     assertStaffModuleAccess(actor.user, 'members', 'write');
     const request = await this.requests.requestMemberDocuments(actor.club.id, memberId, actor.user, dto.slot);
+    const member = await this.members.findOne(actor.club.id, memberId);
+    return { request: { id: request.id, code: request.code, title: request.title }, member };
+  }
+
+  @Post(':memberId/weapon-sheet-requests')
+  async requestWeaponSheets(@Param('memberId', ParseIntPipe) memberId: number) {
+    const actor = await this.session.current();
+    assertStaffModuleAccess(actor.user, 'members', 'write');
+    const request = await this.requests.requestMemberWeaponSheets(actor.club.id, memberId, actor.user);
     const member = await this.members.findOne(actor.club.id, memberId);
     return { request: { id: request.id, code: request.code, title: request.title }, member };
   }

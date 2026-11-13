@@ -42,4 +42,31 @@ export class ClubRequestDocument {
 
   @Column({ name: 'uploaded_at', type: 'timestamptz', default: () => 'now()' })
   uploadedAt: Date;
+
+  /** Documento del expediente al que corresponde este archivo. */
+  @Column({ name: 'item_slot', type: 'text', nullable: true })
+  itemSlot: string | null;
+
+  /** Arma cuya hoja de registro es este archivo. */
+  @Column({ name: 'item_weapon_id', type: 'int', nullable: true })
+  itemWeaponId: number | null;
+
+  /** Solo en archivos ligados a un elemento pedido. */
+  @Column({ name: 'review_status', type: 'text', nullable: true })
+  reviewStatus: RequestItemReview | null;
+
+  @Column({ name: 'review_note', type: 'text', nullable: true })
+  reviewNote: string | null;
+
+  @Column({ name: 'reviewed_at', type: 'timestamptz', nullable: true })
+  reviewedAt: Date | null;
+
+  @Column({ name: 'reviewed_by_user_id', type: 'int', nullable: true })
+  reviewedByUserId: number | null;
+
+  @ManyToOne(() => AppUser)
+  @JoinColumn({ name: 'reviewed_by_user_id' })
+  reviewedBy: AppUser | null;
 }
+
+export type RequestItemReview = 'pending' | 'approved' | 'rejected';

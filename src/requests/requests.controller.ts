@@ -21,6 +21,8 @@ import {
   MemberSubmitRequestDto,
   RequestCommentDto,
   RequestFileDto,
+  RequestItemFileDto,
+  ReviewRequestItemDto,
   SaveRequestDto,
 } from './dto/request.dto';
 import { RequestsService } from './requests.service';
@@ -88,6 +90,25 @@ export class RequestsController {
   ) {
     const actor = await this.session.current();
     return this.requests.addDocument(actor.club.id, requestId, actor.user, dto);
+  }
+
+  @Post(':requestId/items')
+  async uploadItem(
+    @Param('requestId', ParseIntPipe) requestId: number,
+    @Body() dto: RequestItemFileDto,
+  ) {
+    const actor = await this.session.current();
+    return this.requests.uploadItem(actor.club.id, requestId, actor.user, dto);
+  }
+
+  @Post(':requestId/documents/:documentId/review')
+  async reviewItem(
+    @Param('requestId', ParseIntPipe) requestId: number,
+    @Param('documentId', ParseIntPipe) documentId: number,
+    @Body() dto: ReviewRequestItemDto,
+  ) {
+    const actor = await this.session.current();
+    return this.requests.reviewItem(actor.club.id, requestId, documentId, actor.user, dto);
   }
 
   @Post(':requestId/comments')

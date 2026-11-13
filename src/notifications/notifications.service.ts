@@ -10,7 +10,11 @@ import { ClubNotificationRead } from './entities/club-notification-read.entity';
 const NOTIFICATION_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Eventos de solicitud que el socio no debe ver (operación interna o acción propia). */
-const MEMBER_REQUEST_KINDS_HIDDEN = ['request_member_submitted', 'request_removed'] as const;
+const MEMBER_REQUEST_KINDS_HIDDEN = [
+  'request_member_submitted',
+  'request_item_uploaded',
+  'request_removed',
+] as const;
 
 export type NotificationCategory = 'registration' | 'confirmation' | 'update' | 'reversal';
 
@@ -184,6 +188,22 @@ export class NotificationsService {
                     WHERE p.club_id = :clubId
                       AND p.member_id = :memberId
                       AND p.id = (n.entity_id)::int
+                  )`,
+                  { clubId, memberId },
+                );
+            }),
+          )
+          .orWhere(
+            new Brackets((competitions) => {
+              competitions
+                .where(`n.entity_type = 'competition_edition'`)
+                .andWhere(`n.kind IN ('competition_confirmed', 'competition_cancelled')`)
+                .andWhere(
+                  `EXISTS (
+                    SELECT 1 FROM ${FIELDTRACK_SCHEMA}.competition_registrations cr
+                    WHERE cr.club_id = :clubId
+                      AND cr.member_id = :memberId
+                      AND n.dedupe_key IN ('competition-confirmed:' || cr.id, 'competition-cancelled:' || cr.id)
                   )`,
                   { clubId, memberId },
                 );

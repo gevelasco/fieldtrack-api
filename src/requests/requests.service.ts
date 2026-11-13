@@ -6,9 +6,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull, Not, Repository } from 'typeorm';
 import { FileService } from '../common/file/file.service';
-import { REQUEST_DOCUMENT_STORAGE_FOLDER } from '../common/file/storage-folders';
+import {
+  MEMBER_DOCUMENT_STORAGE_FOLDER,
+  MEMBER_WEAPON_SHEET_STORAGE_FOLDER,
+  REQUEST_DOCUMENT_STORAGE_FOLDER,
+} from '../common/file/storage-folders';
 import {
   removeStorageKey,
   resolveStoredFile,
@@ -16,6 +20,7 @@ import {
 } from '../common/file/stored-file.util';
 import { Member } from '../members/entities/member.entity';
 import { MemberDocument } from '../members/entities/member-document.entity';
+import { MemberWeapon } from '../members/entities/member-weapon.entity';
 import { activeDocumentSlots, labelForSlot } from '../clubs/club-documents';
 import { ClubSettingsService } from '../clubs/club-settings.service';
 import { searchTerms } from '../members/members.queries';
@@ -30,13 +35,26 @@ import {
   MemberSubmitRequestDto,
   RequestCommentDto,
   RequestFileDto,
+  RequestItemFileDto,
+  ReviewRequestItemDto,
   SaveRequestDto,
 } from './dto/request.dto';
 import { ClubRequestComment } from './entities/club-request-comment.entity';
 import { ClubRequestDocument } from './entities/club-request-document.entity';
 import { ClubRequestEvent, RequestEventKind } from './entities/club-request-event.entity';
 import { ClubRequest, RequestStatus, RequestTopic } from './entities/club-request.entity';
-import { actorName, mapRequest, mapRequestDetail, memberName, requestCode } from './request.mapper';
+import {
+  actorName,
+  isItemDocument,
+  isItemSettled,
+  mapRequest,
+  mapRequestDetail,
+  memberName,
+  requestCode,
+  requestItems,
+  type RequestItemTarget,
+  weaponLabel,
+} from './request.mapper';
 import {
   listRequests,
   nextRequestNumber,
@@ -94,7 +112,7 @@ export class RequestsService {
     if (actor) {
       await this.assertRequestReadable(clubId, actor, row);
     }
-    return mapRequestDetail(row);
+    return mapRequestDetail(row, await this.itemsOf(this.dataSource.manager, row));
   }
 
   async create(clubId: number, actor: AppUser, dto: CreateRequestDto) {
@@ -220,11 +238,84 @@ export class RequestsService {
           documentSlots: plan.slots,
           title: plan.title,
           description: plan.description,
-          status: 'new',
+          ...startedFor(actor),
           createdByUserId: actor.id,
         }),
       );
-      await this.log(manager, saved, actor, 'created', `Creó la solicitud ${code}. ${plan.logDetail}`);
+      await this.log(manager, saved, actor, 'created', `Creó la solicitud ${code} en proceso. ${plan.logDetail}`);
+      return saved;
+    });
+    const detail = await this.detail(clubId, created.id);
+    await this.notify(clubId, actor, {
+      kind: 'request_created',
+      category: 'registration',
+      title: 'Solicitud creada',
+      detail: `${detail.code} · ${detail.title}${detail.member ? ` · ${detail.member.name}` : ''}.`,
+      requestId: created.id,
+      dedupeKey: `request-created:${created.id}`,
+    });
+    return detail;
+  }
+
+  /** Pide al socio las hojas de registro de las armas que aún no la tienen. */
+  async requestMemberWeaponSheets(clubId: number, memberId: number, actor: AppUser) {
+    requireWorker(actor);
+    const created = await this.dataSource.transaction(async (manager) => {
+      const number = await nextRequestNumber(manager, clubId);
+      const member = await manager.getRepository(Member).findOne({
+        where: { id: memberId, clubId },
+        relations: { weapons: true },
+      });
+      if (!member) {
+        throw new NotFoundException('No se encontró el socio.');
+      }
+      const missing = (member.weapons ?? [])
+        .filter((weapon) => !weapon.sheetFileName)
+        .sort((a, b) => String(a.registeredOn).localeCompare(String(b.registeredOn)) || a.id - b.id);
+      if (missing.length === 0) {
+        throw new ConflictException('Todas las armas del socio ya tienen hoja de registro.');
+      }
+      const open = (await openRequestsByMember(manager, clubId, [member.id])).get(member.id) ?? [];
+      const requestedIn = new Map<number, string>();
+      for (const request of open) {
+        for (const weaponId of request.weaponIds) {
+          if (!requestedIn.has(weaponId)) {
+            requestedIn.set(weaponId, request.code);
+          }
+        }
+      }
+      const weapons = missing.filter((weapon) => !requestedIn.has(weapon.id));
+      if (weapons.length === 0) {
+        const codes = [...new Set(missing.map((weapon) => requestedIn.get(weapon.id)))].join(', ');
+        throw new ConflictException(`Los registros pendientes ya se pidieron en ${codes}.`);
+      }
+      const labels = weapons.map(weaponLabel);
+      const code = requestCode(number);
+      const saved = await manager.getRepository(ClubRequest).save(
+        manager.getRepository(ClubRequest).create({
+          clubId,
+          number,
+          kind: 'member',
+          memberId: member.id,
+          topic: 'weapon_sheets',
+          documentSlots: [],
+          weaponIds: weapons.map((weapon) => weapon.id),
+          title:
+            weapons.length === 1
+              ? `Subir registro de ${labels[0]}`
+              : `Subir ${weapons.length} registros de armas`,
+          description: 'Se pidió al socio subir la hoja de registro de las armas que faltan en su inventario.',
+          ...startedFor(actor),
+          createdByUserId: actor.id,
+        }),
+      );
+      await this.log(
+        manager,
+        saved,
+        actor,
+        'created',
+        `Creó la solicitud ${code} en proceso. Pidió al socio el registro de: ${labels.join('; ')}.`,
+      );
       return saved;
     });
     const detail = await this.detail(clubId, created.id);
@@ -424,6 +515,9 @@ export class RequestsService {
       await this.assertRequestReadable(clubId, actor, current);
       requireMemberInProgress(current);
       requireOpen(current);
+      if (files.length && (current.documentSlots?.length || current.weaponIds?.length)) {
+        throw new BadRequestException('Sube cada archivo en su lugar dentro de la lista de la solicitud.');
+      }
       const existing = (current.documents ?? []).length;
       if (existing + files.length > MAX_REQUEST_DOCUMENTS) {
         throw new BadRequestException(`Una solicitud admite hasta ${MAX_REQUEST_DOCUMENTS} documentos.`);
@@ -455,6 +549,151 @@ export class RequestsService {
       requestId,
       dedupeKey: `request-member-submitted:${requestId}:${detail.updatedAt}`,
     });
+    return detail;
+  }
+
+  /** Socio (en proceso) o staff suben el archivo de un documento o arma pedidos; queda por revisar. */
+  async uploadItem(clubId: number, requestId: number, actor: AppUser, dto: RequestItemFileDto) {
+    const file = decodeRequestFile(dto);
+    const byWorker = WORKER_ROLES.has(actor.role);
+    const replacedKeys: (string | null)[] = [];
+    let label = '';
+    await this.dataSource.transaction(async (manager) => {
+      const current = await this.load(manager, clubId, requestId);
+      if (byWorker) {
+        requireOpen(current);
+      } else {
+        await this.assertRequestReadable(clubId, actor, current);
+        requireMemberInProgress(current);
+      }
+      const item = (await this.itemsOf(manager, current)).find((candidate) =>
+        dto.slot != null ? candidate.slot === dto.slot : candidate.weaponId === Number(dto.weaponId),
+      );
+      if (!item) {
+        throw new BadRequestException('Ese documento no forma parte de esta solicitud.');
+      }
+      const previous = (current.documents ?? []).filter((document) => isItemDocument(document, item));
+      if (previous.some((document) => document.reviewStatus === 'approved')) {
+        throw new ConflictException(`${item.label} ya fue aprobado.`);
+      }
+      for (const document of previous) {
+        replacedKeys.push(document.storageKey);
+        await manager.getRepository(ClubRequestDocument).delete({ id: document.id });
+      }
+      await this.storeDocument(manager, current, actor, file, item);
+      label = item.label;
+    });
+    for (const key of replacedKeys) {
+      await removeStorageKey(this.files, key);
+    }
+    const detail = await this.detail(clubId, requestId, actor);
+    if (!byWorker) {
+      await this.notify(clubId, actor, {
+        kind: 'request_item_uploaded',
+        category: 'update',
+        title: 'Archivo por revisar',
+        detail: `${detail.code} · ${label}${detail.member ? ` · ${detail.member.name}` : ''}.`,
+        requestId,
+        dedupeKey: `request-item-uploaded:${requestId}:${Date.now()}`,
+      });
+    }
+    return detail;
+  }
+
+  /**
+   * Aprobar copia el archivo al expediente o a la hoja del arma. Cuando todos los elementos
+   * quedan aprobados, la solicitud se completa sola.
+   */
+  async reviewItem(
+    clubId: number,
+    requestId: number,
+    documentId: number,
+    actor: AppUser,
+    dto: ReviewRequestItemDto,
+  ) {
+    requireWorker(actor);
+    const note = dto.note?.trim() ?? '';
+    if (dto.decision === 'reject' && !note) {
+      throw new BadRequestException('Escribe el motivo del rechazo para que el socio sepa qué corregir.');
+    }
+    const replacedKeys: (string | null)[] = [];
+    let label = '';
+    let autoCompleted = false;
+    await this.dataSource.transaction(async (manager) => {
+      const current = await this.load(manager, clubId, requestId);
+      requireOpen(current);
+      const documents = current.documents ?? [];
+      const document = documents.find((row) => row.id === documentId);
+      if (!document) {
+        throw new NotFoundException('No se encontró el documento.');
+      }
+      const items = await this.itemsOf(manager, current);
+      const item = items.find((candidate) => isItemDocument(document, candidate));
+      if (!item || document.reviewStatus == null) {
+        throw new BadRequestException('Este archivo no corresponde a un documento pedido.');
+      }
+      if (document.reviewStatus !== 'pending') {
+        throw new ConflictException('Este archivo ya fue revisado.');
+      }
+      label = item.label;
+      const repo = manager.getRepository(ClubRequestDocument);
+      const now = new Date();
+      if (dto.decision === 'reject') {
+        await repo.update(
+          { id: document.id },
+          { reviewStatus: 'rejected', reviewNote: note, reviewedAt: now, reviewedByUserId: actor.id },
+        );
+        await this.log(manager, current, actor, 'item_rejected', `Rechazó ${document.fileName} (${label}): ${note}`);
+        return;
+      }
+      replacedKeys.push(await this.applyItem(manager, current, item, document));
+      await repo.update(
+        { id: document.id },
+        { reviewStatus: 'approved', reviewNote: note || null, reviewedAt: now, reviewedByUserId: actor.id },
+      );
+      await this.log(
+        manager,
+        current,
+        actor,
+        'item_approved',
+        `Aprobó ${document.fileName} y lo guardó en ${item.slot != null ? 'el expediente' : 'el inventario'} (${label}).`,
+      );
+      const allSettled = items.every(
+        (candidate) => candidate === item || isItemSettled(candidate, documents),
+      );
+      if (allSettled) {
+        await this.completeAutomatically(
+          manager,
+          current,
+          actor,
+          'Cerrada por proceso automático: todos los archivos solicitados quedaron aprobados.',
+        );
+        autoCompleted = true;
+      }
+    });
+    for (const key of replacedKeys) {
+      await removeStorageKey(this.files, key);
+    }
+    const detail = await this.detail(clubId, requestId);
+    if (dto.decision === 'reject') {
+      await this.notify(clubId, actor, {
+        kind: 'request_item_rejected',
+        category: 'update',
+        title: 'Archivo rechazado',
+        detail: `${detail.code} · ${label}: ${note}`,
+        requestId,
+        dedupeKey: `request-item-rejected:${requestId}:${documentId}`,
+      });
+    } else if (autoCompleted && detail.completed) {
+      await this.notify(clubId, actor, {
+        kind: 'request_completed',
+        category: 'confirmation',
+        title: 'Solicitud completada',
+        detail: `${detail.code} · ${detail.title}.`,
+        requestId,
+        dedupeKey: `request-completed:${requestId}:${detail.completed.at}`,
+      });
+    }
     return detail;
   }
 
@@ -527,7 +766,7 @@ export class RequestsService {
         createdBy: true,
         startedBy: true,
         completedBy: true,
-        documents: { uploadedBy: true },
+        documents: { uploadedBy: true, reviewedBy: true },
         events: { actor: true },
         comments: { author: true },
       },
@@ -557,7 +796,172 @@ export class RequestsService {
     return { kind: dto.kind, memberId: member.id, member, title, description };
   }
 
-  private async storeDocument(manager: EntityManager, request: ClubRequest, actor: AppUser, file: DecodedRequestFile) {
+  private async itemsOf(manager: EntityManager, request: ClubRequest): Promise<RequestItemTarget[]> {
+    const slots = request.documentSlots ?? [];
+    const weaponIds = request.weaponIds ?? [];
+    if (slots.length === 0 && weaponIds.length === 0) {
+      return [];
+    }
+    const defs = slots.length ? (await this.clubSettings.read(request.clubId)).requiredDocuments : [];
+    const defLabels = Object.fromEntries(defs.map((row) => [row.slot, row.label]));
+    const slotLabels = Object.fromEntries(slots.map((slot) => [slot, labelForSlot(defLabels, slot)]));
+    const weapons =
+      request.memberId && weaponIds.length
+        ? await manager
+            .getRepository(MemberWeapon)
+            .findBy({ id: In(weaponIds), memberId: request.memberId })
+        : [];
+    const loaded =
+      request.memberId && slots.length
+        ? await manager
+            .getRepository(MemberDocument)
+            .findBy({ memberId: request.memberId, slot: In(slots) })
+        : [];
+    const loadedSlots = new Map(loaded.map((document) => [document.slot, String(document.loadedOn)]));
+    return requestItems(request, slotLabels, weapons, loadedSlots);
+  }
+
+  /**
+   * Cierra las solicitudes abiertas del socio cuyos documentos o registros ya están todos en su
+   * expediente, p. ej. porque el staff los cargó directo desde el drawer. Devuelve los códigos cerrados.
+   */
+  async closeSettledForMember(clubId: number, memberId: number, actor: AppUser): Promise<string[]> {
+    const open = await this.requests.find({
+      where: { clubId, memberId, removedAt: IsNull(), status: Not('completed') },
+      relations: { documents: true },
+    });
+    const closed: { id: number; code: string; title: string }[] = [];
+    for (const request of open) {
+      if (!request.documentSlots?.length && !request.weaponIds?.length) {
+        continue;
+      }
+      const items = await this.itemsOf(this.dataSource.manager, request);
+      if (!items.every((item) => isItemSettled(item, request.documents ?? []))) {
+        continue;
+      }
+      await this.dataSource.transaction(async (manager) => {
+        await this.completeAutomatically(
+          manager,
+          request,
+          actor,
+          'Cerrada por proceso automático: los archivos solicitados ya se cargaron en el expediente del socio.',
+        );
+      });
+      closed.push({ id: request.id, code: requestCode(request.number), title: request.title });
+    }
+    for (const request of closed) {
+      await this.notify(clubId, actor, {
+        kind: 'request_completed',
+        category: 'confirmation',
+        title: 'Solicitud completada',
+        detail: `${request.code} · ${request.title}.`,
+        requestId: request.id,
+        dedupeKey: `request-completed:${request.id}:${Date.now()}`,
+      });
+    }
+    return closed.map((request) => request.code);
+  }
+
+  private async completeAutomatically(
+    manager: EntityManager,
+    request: ClubRequest,
+    actor: AppUser,
+    detail: string,
+  ) {
+    const now = new Date();
+    await manager.getRepository(ClubRequest).update(
+      { id: request.id },
+      {
+        status: 'completed',
+        completedAt: now,
+        completedByUserId: actor.id,
+        startedAt: request.startedAt ?? now,
+        startedByUserId: request.startedByUserId ?? actor.id,
+      },
+    );
+    await this.log(manager, request, actor, 'completed', detail);
+  }
+
+  /** Copia el archivo aprobado a su lugar; devuelve la llave del archivo que reemplazó. */
+  private async applyItem(
+    manager: EntityManager,
+    request: ClubRequest,
+    item: RequestItemTarget,
+    document: ClubRequestDocument,
+  ): Promise<string | null> {
+    if (!request.memberId) {
+      throw new BadRequestException('La solicitud no tiene socio vinculado.');
+    }
+    const stored = await this.storedContent(manager, document);
+    const file = { content: stored, contentType: document.contentType, size: stored.length };
+    if (item.slot != null) {
+      const repo = manager.getRepository(MemberDocument);
+      const existing = await repo.findOne({ where: { memberId: request.memberId, slot: item.slot } });
+      const uploaded = await uploadToStorage(this.files, MEMBER_DOCUMENT_STORAGE_FOLDER, file, document.fileName);
+      const values = {
+        fileName: document.fileName,
+        contentType: uploaded.contentType,
+        sizeBytes: uploaded.sizeBytes,
+        storageKey: uploaded.storageKey,
+        content: null,
+        loadedOn: todayInMexico(),
+      };
+      if (existing) {
+        await repo.update({ id: existing.id }, values);
+        return existing.storageKey;
+      }
+      await repo.insert({ memberId: request.memberId, slot: item.slot, ...values });
+      return null;
+    }
+    const weapons = manager.getRepository(MemberWeapon);
+    const weapon = await weapons.findOne({
+      where: { id: item.weaponId ?? 0, memberId: request.memberId, clubId: request.clubId },
+    });
+    if (!weapon) {
+      throw new BadRequestException('El arma ya no está en el inventario del socio.');
+    }
+    const uploaded = await uploadToStorage(
+      this.files,
+      MEMBER_WEAPON_SHEET_STORAGE_FOLDER,
+      file,
+      document.fileName,
+    );
+    await weapons.update(
+      { id: weapon.id },
+      {
+        sheetFileName: document.fileName,
+        sheetContentType: uploaded.contentType,
+        sheetSizeBytes: uploaded.sizeBytes,
+        sheetStorageKey: uploaded.storageKey,
+        sheetContent: null,
+      },
+    );
+    return weapon.sheetStorageKey;
+  }
+
+  private async storedContent(manager: EntityManager, document: ClubRequestDocument): Promise<Buffer> {
+    if (document.storageKey) {
+      return (await this.files.getObject(document.storageKey)).body;
+    }
+    const row = await manager
+      .getRepository(ClubRequestDocument)
+      .createQueryBuilder('document')
+      .addSelect('document.content')
+      .where('document.id = :id', { id: document.id })
+      .getOne();
+    if (!row?.content?.length) {
+      throw new NotFoundException('No hay archivo.');
+    }
+    return row.content;
+  }
+
+  private async storeDocument(
+    manager: EntityManager,
+    request: ClubRequest,
+    actor: AppUser,
+    file: DecodedRequestFile,
+    item?: RequestItemTarget,
+  ) {
     const uploaded = await uploadToStorage(
       this.files,
       REQUEST_DOCUMENT_STORAGE_FOLDER,
@@ -573,7 +977,14 @@ export class RequestsService {
       storageKey: uploaded.storageKey,
       content: null,
       uploadedByUserId: actor.id,
+      itemSlot: item?.slot ?? null,
+      itemWeaponId: item?.weaponId ?? null,
+      reviewStatus: item ? 'pending' : null,
     });
+    if (item) {
+      await this.log(manager, request, actor, 'item_uploaded', `Subió ${file.fileName} para ${item.label}.`);
+      return;
+    }
     await this.log(manager, request, actor, 'document_added', `Adjuntó el documento ${file.fileName}.`);
   }
 
@@ -738,6 +1149,15 @@ function missingPlan(
         : 'Se pidió al socio subir los documentos que faltan en su expediente.',
     logDetail: `Pidió al socio: ${slotLabels.join(', ')}.`,
   };
+}
+
+/** Lo que se le pide al socio nace en proceso para que pueda subir los archivos de inmediato. */
+function startedFor(actor: AppUser) {
+  return { status: 'in_progress' as const, startedAt: new Date(), startedByUserId: actor.id };
+}
+
+function todayInMexico(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City' }).format(new Date());
 }
 
 function formatDay(value: string | Date): string {

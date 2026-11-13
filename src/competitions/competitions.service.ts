@@ -160,6 +160,12 @@ export class CompetitionsService {
       if (current.closedAt) {
         throw new ConflictException('Esta competencia ya está cerrada.');
       }
+      const activeGuests = (current.registrations ?? []).some(
+        (row) => row.participantKind === 'guest' && (row.status === 'pre_registered' || row.status === 'confirmed'),
+      );
+      if (!fields.isPublic && activeGuests) {
+        throw new ConflictException('Hay invitados inscritos; quítalos antes de hacerla solo para socios.');
+      }
       await this.saveUniqueEditionTitle(manager, current.disciplineId, fields.title, current.id);
       await manager.getRepository(CompetitionEdition).update({ id: current.id, clubId }, fields);
       const updated = await this.requireEdition(manager, clubId, editionId);
@@ -225,6 +231,9 @@ export class CompetitionsService {
       if (edition.closedAt) {
         throw new ConflictException('Esta competencia ya no acepta inscripciones.');
       }
+      if (!edition.isPublic) {
+        throw new ConflictException('Esta competencia es solo para socios; no admite invitados.');
+      }
       await manager.getRepository(CompetitionRegistration).save(
         manager.getRepository(CompetitionRegistration).create({
           clubId,
@@ -270,12 +279,14 @@ export class CompetitionsService {
       );
     });
     const detail = await this.edition(clubId, editionId);
+    const confirmed = detail.registrations.find((row) => row.id === registrationId);
+    const participant = confirmed?.member?.name ?? confirmed?.guestName ?? null;
     await this.notifications.record({
       clubId,
       kind: 'competition_confirmed',
-      category: 'registration',
+      category: 'confirmation',
       title: 'Lugar confirmado en competencia',
-      detail: `${detail.label} · ${detail.confirmedCount} confirmados.`,
+      detail: [participant, detail.label, `${detail.confirmedCount} confirmados.`].filter(Boolean).join(' · '),
       entityType: 'competition_edition',
       entityId: String(editionId),
       actorUserId: actor.id,
@@ -299,12 +310,38 @@ export class CompetitionsService {
       }
     } else {
       requireWorker(actor);
+      if (row.status !== 'pre_registered' && row.status !== 'confirmed') {
+        throw new ConflictException('Esta inscripción ya no está activa.');
+      }
+      if (row.rank !== null) {
+        throw new ConflictException('No se puede quitar a un participante con lugar en el ranking.');
+      }
     }
     await this.dataSource.manager.getRepository(CompetitionRegistration).update(
       { id: row.id },
       { status: 'cancelled' },
     );
-    return this.edition(clubId, editionId);
+    const detail = await this.edition(clubId, editionId);
+    if (actor.role !== 'socio' && row.participantKind === 'member') {
+      await this.notifications.record({
+        clubId,
+        kind: 'competition_cancelled',
+        category: 'reversal',
+        title: 'Inscripción cancelada en competencia',
+        detail: [
+          detail.registrations.find((item) => item.id === row.id)?.member?.name ?? null,
+          detail.label,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        entityType: 'competition_edition',
+        entityId: String(editionId),
+        actorUserId: actor.id,
+        actorLabel: actorName(actor),
+        dedupeKey: `competition-cancelled:${row.id}`,
+      });
+    }
+    return detail;
   }
 
   async saveScore(clubId: number, editionId: number, registrationId: number, actor: AppUser, dto: SaveScoreDto) {
@@ -359,7 +396,12 @@ export class CompetitionsService {
       await repo.update({ clubId, editionId }, { rank: null, score: null });
       let place = 1;
       for (const winner of dto.places) {
-        const row = await this.registrationForRankingWinner(manager, edition, clubId, actor, winner);
+        const row = (edition.registrations ?? []).find(
+          (item) => item.id === winner.registrationId && item.status === 'confirmed',
+        );
+        if (!row) {
+          throw new BadRequestException('El ranking solo admite participantes confirmados.');
+        }
         if (usedRegistrationIds.has(row.id)) {
           throw new BadRequestException('No repitas participantes en el ranking.');
         }
@@ -376,83 +418,6 @@ export class CompetitionsService {
       await finalizeEdition(manager, edition.id, clubId);
     });
     return this.edition(clubId, editionId);
-  }
-
-  private async registrationForRankingWinner(
-    manager: EntityManager,
-    edition: CompetitionEdition,
-    clubId: number,
-    actor: AppUser,
-    winner: PublishWinnersDto['places'][number],
-  ): Promise<CompetitionRegistration> {
-    const repo = manager.getRepository(CompetitionRegistration);
-    const now = new Date();
-    if (winner.memberId) {
-      const member = await manager.getRepository(Member).findOne({
-        where: { id: winner.memberId, clubId },
-      });
-      if (!member) {
-        throw new BadRequestException('Socio no encontrado.');
-      }
-      const existing = (edition.registrations ?? []).find(
-        (row) => row.memberId === member.id && row.status !== 'cancelled' && row.status !== 'expired',
-      );
-      if (existing) {
-        if (existing.status === 'pre_registered') {
-          await repo.update(
-            { id: existing.id },
-            { status: 'confirmed', confirmedAt: now, confirmedByUserId: actor.id },
-          );
-          existing.status = 'confirmed';
-        }
-        return existing;
-      }
-      return repo.save(
-        repo.create({
-          clubId,
-          editionId: edition.id,
-          participantKind: 'member',
-          memberId: member.id,
-          status: 'confirmed',
-          preRegisteredAt: now,
-          confirmedAt: now,
-          confirmedByUserId: actor.id,
-        }),
-      );
-    }
-    const guestName = winner.guestName?.trim();
-    if (!guestName) {
-      throw new BadRequestException('Indica un socio o el nombre del ganador.');
-    }
-    const guest = (edition.registrations ?? []).find(
-      (row) =>
-        row.participantKind === 'guest' &&
-        row.status !== 'cancelled' &&
-        row.status !== 'expired' &&
-        (row.guestName ?? '').trim().toLowerCase() === guestName.toLowerCase(),
-    );
-    if (guest) {
-      if (guest.status === 'pre_registered') {
-        await repo.update(
-          { id: guest.id },
-          { status: 'confirmed', confirmedAt: now, confirmedByUserId: actor.id },
-        );
-        guest.status = 'confirmed';
-      }
-      return guest;
-    }
-    return repo.save(
-      repo.create({
-        clubId,
-        editionId: edition.id,
-        participantKind: 'guest',
-        guestName,
-        status: 'confirmed',
-        preRegisteredAt: now,
-        confirmedAt: now,
-        confirmedByUserId: actor.id,
-      }),
-    );
   }
 
   private async listDiscipline(clubId: number, disciplineId: number) {
@@ -495,6 +460,11 @@ export class CompetitionsService {
     const startsOn = asDate(edition.startsOn);
     const endsOn = asDate(edition.endsOn);
     const allDay = edition.startTime === null;
+    /** El calendario exige hora de fin > hora de inicio; en eventos de varios días puede no cumplirse. */
+    const endTime =
+      allDay || !edition.endTime || edition.endTime.slice(0, 5) <= edition.startTime!.slice(0, 5)
+        ? null
+        : edition.endTime;
     const fields = {
       title: `${disciplineName} — ${edition.title}`,
       description:
@@ -505,7 +475,7 @@ export class CompetitionsService {
       startsOn,
       endsOn: endsOn > startsOn ? endsOn : null,
       startTime: allDay ? null : edition.startTime,
-      endTime: allDay ? null : edition.endTime,
+      endTime,
       recurrence: 'none' as const,
       repeatUntil: null,
     };
@@ -649,6 +619,14 @@ function editionFields(dto: SaveEditionDto) {
   if (dto.endsOn < dto.startsOn) {
     throw new BadRequestException('La fecha final debe ser igual o posterior a la inicial.');
   }
+  if (
+    dto.endsOn === dto.startsOn &&
+    dto.startTime &&
+    dto.endTime &&
+    dto.endTime.slice(0, 5) <= dto.startTime.slice(0, 5)
+  ) {
+    throw new BadRequestException('El fin del cronograma debe ser después del inicio.');
+  }
   const registrationOpens = new Date(dto.registrationOpens);
   const registrationCloses = new Date(dto.registrationCloses);
   const paymentDeadline = new Date(dto.paymentDeadline);
@@ -678,6 +656,7 @@ function editionFields(dto: SaveEditionDto) {
     paymentDeadline,
     notes: (dto.notes ?? '').trim(),
     minimumLevel,
+    isPublic: dto.isPublic ?? true,
   };
 }
 

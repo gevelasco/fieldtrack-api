@@ -72,6 +72,7 @@ export function mapMember(
     title: string;
     topic: string;
     documentSlots: readonly string[];
+    weaponIds?: readonly number[];
   }[] = [],
   options: { includePetaHistory?: boolean } = {},
 ) {
@@ -121,7 +122,9 @@ export function mapMember(
       end: currentPeriod.end,
       label: periodLabel(currentPeriod),
     },
-    weapons: (member.weapons ?? []).map(mapWeapon),
+    weapons: (member.weapons ?? []).map((weapon) =>
+      mapWeapon(weapon, member.petas ? { petas: member.petas, calendar } : undefined),
+    ),
     petas: sortPetas(member.petas ?? [])
       .filter((peta) => includePetaHistory || peta.isCurrent !== false)
       .map((peta) => mapPeta(peta, calendar)),
@@ -148,7 +151,47 @@ export function mapDocument(document: MemberDocument) {
   };
 }
 
-export function mapWeapon(weapon: MemberWeapon) {
+/** Las armas de protección (domicilio o parcela) no se incluyen en un PETA. */
+export function modalityAllowsPeta(modality: string): boolean {
+  return modality !== 'proteccion-domicilio' && modality !== 'proteccion-parcela';
+}
+
+/** PETAs que cubren un arma según su modalidad. */
+function petaTypesForModality(modality: string): readonly string[] {
+  if (modality === 'caceria') {
+    return ['caceria'];
+  }
+  if (modality === 'tiro-deportivo') {
+    return ['tiro-competencia', 'tiro-campo'];
+  }
+  return [];
+}
+
+/**
+ * La marca «incluida en el PETA» se apaga sola cuando vencen todos los PETAs vigentes que aplican al arma.
+ * Si el socio aún no tiene un PETA cargado de ese rubro, no hay fecha que evaluar y se respeta la marca.
+ */
+export function weaponPetaActive(
+  weapon: MemberWeapon,
+  petas: readonly MemberPeta[],
+  calendar: MembershipCalendar,
+  today = asDate(new Date()),
+): boolean {
+  if (!weapon.hasPeta || !modalityAllowsPeta(weapon.modality)) {
+    return false;
+  }
+  const types = petaTypesForModality(weapon.modality);
+  const relevant = petas.filter((peta) => peta.isCurrent !== false && types.includes(peta.permitType));
+  if (relevant.length === 0) {
+    return true;
+  }
+  return relevant.some((peta) => petaExpiresOn(peta.permitType, asDate(peta.loadedOn), calendar) >= today);
+}
+
+export function mapWeapon(
+  weapon: MemberWeapon,
+  context?: { petas: readonly MemberPeta[]; calendar: MembershipCalendar },
+) {
   return {
     id: weapon.id,
     brand: weapon.brand,
@@ -157,7 +200,9 @@ export function mapWeapon(weapon: MemberWeapon) {
     serialNumber: weapon.serialNumber.toLocaleUpperCase('es-MX'),
     platform: weapon.platform,
     modality: weapon.modality,
-    hasPeta: weapon.hasPeta,
+    hasPeta: context
+      ? weaponPetaActive(weapon, context.petas, context.calendar)
+      : weapon.hasPeta && modalityAllowsPeta(weapon.modality),
     registeredOn: asDate(weapon.registeredOn),
     sheet: weapon.sheetFileName
       ? {

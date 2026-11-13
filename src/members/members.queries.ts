@@ -9,6 +9,7 @@ export type MemberLoadProfile = 'list' | 'portal' | 'detail';
 const RELATIONS_BY_PROFILE: Record<MemberLoadProfile, FindOptionsRelations<Member>> = {
   list: {
     weapons: true,
+    petas: true,
     payments: { recordedBy: true, revertedBy: true },
   },
   portal: {
@@ -172,6 +173,26 @@ export async function membersByIds(
   });
 }
 
+const PETA_FOR_WEAPON_SQL = `p.member_id = w.member_id AND p.is_current
+  AND (CASE w.modality
+    WHEN 'caceria' THEN p.permit_type = 'caceria'
+    WHEN 'tiro-deportivo' THEN p.permit_type IN ('tiro-competencia', 'tiro-campo')
+    ELSE false END)`;
+
+/**
+ * Misma regla que `weaponPetaActive`. Un PETA sigue vigente si se cargó en el periodo actual de su rubro
+ * ($2 = inicio del periodo de cacería, $3 = inicio del de tiro deportivo).
+ */
+const WEAPON_PETA_ACTIVE_SQL = `(w.has_peta
+  AND w.modality NOT IN ('proteccion-domicilio', 'proteccion-parcela') AND (
+  NOT EXISTS (SELECT 1 FROM fieldtrack.member_petas p WHERE ${PETA_FOR_WEAPON_SQL})
+  OR EXISTS (
+    SELECT 1 FROM fieldtrack.member_petas p
+    WHERE ${PETA_FOR_WEAPON_SQL}
+      AND p.loaded_on >= CASE p.permit_type WHEN 'caceria' THEN $2::date ELSE $3::date END
+  )
+))`;
+
 export async function memberSummary(
   manager: EntityManager,
   clubId: number,
@@ -191,13 +212,17 @@ export async function memberSummary(
     hunting_permits: number;
     sport_permits: number;
   }> = await manager.query(
-    `SELECT count(*)::int AS total,
+    `WITH w AS (
+       SELECT w.sheet_file_name, w.modality, ${WEAPON_PETA_ACTIVE_SQL} AS peta_active
+       FROM fieldtrack.member_weapons w WHERE w.club_id = $1
+     )
+     SELECT count(*)::int AS total,
             count(*) FILTER (WHERE sheet_file_name IS NULL)::int AS without_sheet,
-            count(*) FILTER (WHERE has_peta)::int AS permits,
-            count(*) FILTER (WHERE has_peta AND modality = 'caceria')::int AS hunting_permits,
-            count(*) FILTER (WHERE has_peta AND modality = 'tiro-deportivo')::int AS sport_permits
-     FROM fieldtrack.member_weapons WHERE club_id = $1`,
-    [clubId],
+            count(*) FILTER (WHERE peta_active)::int AS permits,
+            count(*) FILTER (WHERE peta_active AND modality = 'caceria')::int AS hunting_permits,
+            count(*) FILTER (WHERE peta_active AND modality = 'tiro-deportivo')::int AS sport_permits
+     FROM w`,
+    [clubId, periods.caza.start, periods['tiro-deportivo'].start],
   );
   const statusParams: unknown[] = [clubId];
   const statusCase = statusRank(periods, statusParams);

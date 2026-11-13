@@ -67,6 +67,10 @@ export class CompetitionEdition {
   @Column({ name: 'minimum_level', type: 'text', nullable: true })
   minimumLevel: 'iniciados' | 'c' | 'b' | 'a' | null;
 
+  /** false = solo socios (no admite invitados). */
+  @Column({ name: 'is_public', type: 'boolean', default: true })
+  isPublic: boolean;
+
   @Column({ name: 'closed_at', type: 'timestamptz', nullable: true })
   closedAt: Date | null;
 

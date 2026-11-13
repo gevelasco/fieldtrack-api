@@ -50,6 +50,32 @@ export class RequestFileDto {
   contentBase64: string;
 }
 
+/** Archivo para un elemento pedido: un documento del expediente (`slot`) o la hoja de un arma (`weaponId`). */
+export class RequestItemFileDto extends RequestFileDto {
+  @ValidateIf((dto: RequestItemFileDto) => dto.weaponId == null)
+  @IsString()
+  @MaxLength(80)
+  slot?: string;
+
+  @ValidateIf((dto: RequestItemFileDto) => dto.slot == null)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  weaponId?: number;
+}
+
+export const REQUEST_ITEM_DECISIONS = ['approve', 'reject'] as const;
+
+export class ReviewRequestItemDto {
+  @IsIn(REQUEST_ITEM_DECISIONS)
+  decision: (typeof REQUEST_ITEM_DECISIONS)[number];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
 export class SaveRequestDto {
   @IsIn(REQUEST_KINDS)
   kind: (typeof REQUEST_KINDS)[number];

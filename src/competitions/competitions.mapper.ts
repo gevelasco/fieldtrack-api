@@ -54,6 +54,7 @@ export function mapEditionSummary(
     paymentDeadline: edition.paymentDeadline.toISOString(),
     notes: edition.notes,
     minimumLevel: edition.minimumLevel,
+    isPublic: edition.isPublic,
     status: editionStatus(edition, today),
     confirmedCount: counts.confirmed,
     pendingCount: counts.pending,

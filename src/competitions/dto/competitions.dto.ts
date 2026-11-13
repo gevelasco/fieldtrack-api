@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -80,6 +81,11 @@ export class SaveEditionDto {
   @ValidateIf((_, value) => value !== null)
   @IsIn(['open', 'iniciados', 'c', 'b', 'a'])
   minimumLevel?: 'open' | 'iniciados' | 'c' | 'b' | 'a' | null;
+
+  /** Omitido = público (socios e invitados). */
+  @IsOptional()
+  @IsBoolean()
+  isPublic?: boolean;
 }
 
 export class CreateDisciplineDto extends SaveDisciplineDto {
@@ -119,17 +125,11 @@ export class SaveScoreDto {
   score!: number;
 }
 
+/** Solo participantes confirmados de la edición (socios o invitados). */
 export class RankingWinnerDto {
-  @ValidateIf((row: RankingWinnerDto) => !row.guestName?.trim())
   @IsInt()
   @Min(1)
-  memberId?: number;
-
-  @ValidateIf((row: RankingWinnerDto) => !row.memberId)
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(120)
-  guestName?: string;
+  registrationId!: number;
 
   @IsOptional()
   @IsNumber()
