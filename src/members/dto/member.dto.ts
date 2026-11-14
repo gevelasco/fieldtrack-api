@@ -157,6 +157,26 @@ export class CreateMemberDto {
   @MaxLength(40)
   phone?: string;
 
+  @IsString()
+  @MinLength(18)
+  @MaxLength(18)
+  curp: string;
+
+  @IsString()
+  @MinLength(12)
+  @MaxLength(13)
+  rfc: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(400)
+  address?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => FilePayloadDto)
+  photo?: FilePayloadDto;
+
   @Matches(DATE)
   joinedOn: string;
 
@@ -202,6 +222,30 @@ export class UpdateMemberDto {
   @IsString()
   @MaxLength(40)
   phone?: string;
+
+  @IsString()
+  @MinLength(18)
+  @MaxLength(18)
+  curp: string;
+
+  @IsString()
+  @MinLength(12)
+  @MaxLength(13)
+  rfc: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(400)
+  address?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => FilePayloadDto)
+  photo?: FilePayloadDto | null;
+
+  @IsOptional()
+  @IsBoolean()
+  clearPhoto?: boolean;
 
   @IsIn(SEX)
   sex: (typeof SEX)[number];

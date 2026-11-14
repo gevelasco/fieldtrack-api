@@ -81,6 +81,17 @@ export class MembersController {
     return this.members.findOne(actor.club.id, memberId);
   }
 
+  @Get(':memberId/photo')
+  async photo(@Param('memberId', ParseIntPipe) memberId: number) {
+    const actor = await this.session.current();
+    await this.members.assertMemberReadable(actor, memberId);
+    const file = await this.members.readPhoto(actor.club.id, memberId);
+    return new StreamableFile(file.content, {
+      type: file.contentType,
+      disposition: `inline; filename="${encodeURIComponent(file.fileName)}"`,
+    });
+  }
+
   @Get(':memberId/documents/:slot/file')
   async documentFile(
     @Param('memberId', ParseIntPipe) memberId: number,

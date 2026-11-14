@@ -113,6 +113,16 @@ export function mapMember(
     maternalSurname: member.maternalSurname,
     email: member.email,
     phone: member.phone,
+    curp: member.curp,
+    rfc: member.rfc,
+    address: member.address,
+    photo: member.photoFileName
+      ? {
+          fileName: member.photoFileName,
+          contentType: member.photoContentType,
+          sizeBytes: member.photoSizeBytes == null ? null : Number(member.photoSizeBytes),
+        }
+      : null,
     joinedOn: asDate(member.joinedOn),
     sex: member.sex,
     membership,

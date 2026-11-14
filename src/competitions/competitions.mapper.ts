@@ -125,7 +125,7 @@ function countRegistrations(rows: CompetitionRegistration[]) {
   return { confirmed, pending };
 }
 
-function buildRanking(registrations: CompetitionRegistration[]) {
+export function buildRanking(registrations: CompetitionRegistration[]) {
   return registrations
     .filter((row) => row.status === 'confirmed' && row.rank !== null)
     .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))

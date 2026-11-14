@@ -33,6 +33,12 @@ export class CompetitionsController {
     return this.competitions.openForMembers(actor.club.id, actor.user);
   }
 
+  @Get('results')
+  async results() {
+    const actor = await this.session.current();
+    return this.competitions.recentResults(actor.club.id);
+  }
+
   @Post('disciplines')
   async createDiscipline(@Body() dto: CreateDisciplineDto) {
     const actor = await this.session.current();

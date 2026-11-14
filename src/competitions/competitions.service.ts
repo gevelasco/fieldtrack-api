@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { Between, DataSource, EntityManager, Repository } from 'typeorm';
 import { ClubEvent } from '../events/entities/club-event.entity';
 import { asDate } from '../members/member.mapper';
 import { Member } from '../members/entities/member.entity';
@@ -15,6 +15,7 @@ import { actorName } from '../requests/request.mapper';
 import { AppUser } from '../users/entities/app-user.entity';
 import {
   asDateOnly,
+  buildRanking,
   editionStatus,
   mapDiscipline,
   mapEditionDetail,
@@ -34,6 +35,7 @@ import { CompetitionEdition } from './entities/competition-edition.entity';
 import { CompetitionRegistration } from './entities/competition-registration.entity';
 
 const WORKER_ROLES = new Set(['admin', 'staff']);
+const RESULTS_WINDOW_DAYS = 30;
 
 @Injectable()
 export class CompetitionsService {
@@ -54,6 +56,29 @@ export class CompetitionsService {
       order: { name: 'ASC' },
     });
     return rows.map((row) => mapDiscipline(row, today));
+  }
+
+  /** Ganadores de competencias que terminaron en los últimos 30 días (visible para todo el club). */
+  async recentResults(clubId: number) {
+    const today = asDateOnly(new Date());
+    const cutoff = new Date(`${today}T00:00:00Z`);
+    cutoff.setUTCDate(cutoff.getUTCDate() - RESULTS_WINDOW_DAYS);
+    const rows = await this.editions.find({
+      where: { clubId, endsOn: Between(asDateOnly(cutoff), today) },
+      relations: { discipline: true, registrations: { member: true } },
+      order: { endsOn: 'DESC' },
+    });
+    return rows
+      .map((edition) => ({
+        id: edition.id,
+        disciplineName: edition.discipline?.name ?? '',
+        title: edition.title,
+        venue: edition.venue ?? '',
+        startsOn: edition.startsOn,
+        endsOn: edition.endsOn,
+        ranking: buildRanking(edition.registrations ?? []).map(({ registrationId: _id, ...row }) => row),
+      }))
+      .filter((row) => row.ranking.length > 0);
   }
 
   async openForMembers(clubId: number, actor: AppUser) {

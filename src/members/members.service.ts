@@ -11,6 +11,7 @@ import { DataSource, EntityManager, Repository } from 'typeorm';
 import { FileService } from '../common/file/file.service';
 import {
   MEMBER_DOCUMENT_STORAGE_FOLDER,
+  MEMBER_PHOTO_STORAGE_FOLDER,
   MEMBER_PETA_STORAGE_FOLDER,
   MEMBER_WEAPON_SHEET_STORAGE_FOLDER,
 } from '../common/file/storage-folders';
@@ -192,6 +193,9 @@ export class MembersService {
           maternalSurname,
           email: dto.email?.trim() ?? '',
           phone: dto.phone?.trim() ?? '',
+          curp: normalizeCurp(dto.curp),
+          rfc: normalizeRfc(dto.rfc),
+          address: (dto.address ?? '').trim(),
           joinedOn: dto.joinedOn,
           sex: dto.sex,
           membership: dto.membership,
@@ -199,6 +203,7 @@ export class MembersService {
         }),
       );
       await this.writeDocuments(manager, saved.id, dto.documents ?? [], true);
+      await this.writeMemberPhoto(manager, saved, dto.photo ?? undefined, false);
       await this.writeWeapons(manager, clubId, saved.id, dto.weapons ?? []);
       const calendar = calendarFromClub(club);
       const paidOn = firstPaymentDate(dto.joinedOn, dto.membership, calendar);
@@ -312,11 +317,15 @@ export class MembersService {
       member.maternalSurname = dto.maternalSurname?.trim() ?? '';
       member.email = dto.email?.trim() ?? '';
       member.phone = dto.phone?.trim() ?? '';
+      member.curp = normalizeCurp(dto.curp);
+      member.rfc = normalizeRfc(dto.rfc);
+      member.address = (dto.address ?? '').trim();
       member.sex = dto.sex;
       member.membership = dto.membership;
       await manager.getRepository(Member).save(member);
       await this.syncSocioAccount(manager, member);
       await this.writeDocuments(manager, member.id, dto.documents ?? [], false);
+      await this.writeMemberPhoto(manager, member, dto.photo ?? undefined, dto.clearPhoto === true);
       await this.persistStatus(manager, member, club);
     });
     await this.notifications.record({
@@ -524,6 +533,19 @@ export class MembersService {
     return Number.isFinite(rounds) && rounds > 0 ? rounds : 10;
   }
 
+  async readPhoto(clubId: number, memberId: number) {
+    const member = await this.members.findOne({ where: { id: memberId, clubId } });
+    if (!member?.photoFileName) {
+      throw new NotFoundException('Este socio no tiene foto.');
+    }
+    return resolveStoredFile(this.files, {
+      fileName: member.photoFileName,
+      contentType: member.photoContentType,
+      storageKey: member.photoStorageKey,
+      content: null,
+    });
+  }
+
   async readDocument(clubId: number, memberId: number, slot: string) {
     const row = await this.dataSource.getRepository(MemberDocument)
       .createQueryBuilder('document')
@@ -673,6 +695,52 @@ export class MembersService {
       await manager.getRepository(Member).update({ id: member.id }, { status });
     }
     return status;
+  }
+
+  private async writeMemberPhoto(
+    manager: EntityManager,
+    member: Member,
+    payload: FilePayloadDto | undefined,
+    clear: boolean,
+  ): Promise<void> {
+    if (clear) {
+      await removeStorageKey(this.files, member.photoStorageKey);
+      await manager.getRepository(Member).update(
+        { id: member.id },
+        {
+          photoFileName: null,
+          photoContentType: null,
+          photoStorageKey: null,
+          photoSizeBytes: null,
+        },
+      );
+      member.photoFileName = null;
+      member.photoContentType = null;
+      member.photoStorageKey = null;
+      member.photoSizeBytes = null;
+      return;
+    }
+    const file = decodeFile(payload);
+    if (!file) {
+      return;
+    }
+    assertMemberPhotoType(file.contentType);
+    const name = payload?.fileName?.trim() || 'foto-socio.jpg';
+    const uploaded = await uploadToStorage(this.files, MEMBER_PHOTO_STORAGE_FOLDER, file, name);
+    await removeStorageKey(this.files, member.photoStorageKey);
+    await manager.getRepository(Member).update(
+      { id: member.id },
+      {
+        photoFileName: name,
+        photoContentType: uploaded.contentType,
+        photoStorageKey: uploaded.storageKey,
+        photoSizeBytes: uploaded.sizeBytes,
+      },
+    );
+    member.photoFileName = name;
+    member.photoContentType = uploaded.contentType;
+    member.photoStorageKey = uploaded.storageKey;
+    member.photoSizeBytes = uploaded.sizeBytes;
   }
 
   private async writeDocuments(
@@ -982,4 +1050,27 @@ function rethrowUnique(error: unknown): never {
     throw new ConflictException('Ese número de socio ya existe.');
   }
   throw error;
+}
+
+function normalizeCurp(value: string): string {
+  const curp = value.trim().toUpperCase();
+  if (!/^[A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d$/.test(curp)) {
+    throw new BadRequestException('Escribe una CURP válida (18 caracteres).');
+  }
+  return curp;
+}
+
+function normalizeRfc(value: string): string {
+  const rfc = value.trim().toUpperCase();
+  if (!/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(rfc)) {
+    throw new BadRequestException('Escribe un RFC válido.');
+  }
+  return rfc;
+}
+
+function assertMemberPhotoType(contentType: string) {
+  const type = contentType.toLowerCase();
+  if (!type.startsWith('image/')) {
+    throw new BadRequestException('La foto del socio debe ser una imagen.');
+  }
 }

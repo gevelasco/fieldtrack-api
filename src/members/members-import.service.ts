@@ -111,6 +111,8 @@ export class MembersImportService {
         maternalSurname: row.maternalSurname || undefined,
         email: row.email || undefined,
         phone: row.phone || undefined,
+        curp: 'AAAA000000HAAAAA0A',
+        rfc: 'XAXX010101000',
         joinedOn,
         sex: parseSexInput(row.sexRaw),
         membership: membership as CreateMemberDto['membership'],

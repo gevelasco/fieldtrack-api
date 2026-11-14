@@ -55,6 +55,27 @@ export class Member {
   @Column({ type: 'text', default: '' })
   phone: string;
 
+  @Column({ type: 'text', default: '' })
+  curp: string;
+
+  @Column({ type: 'text', default: '' })
+  rfc: string;
+
+  @Column({ type: 'text', default: '' })
+  address: string;
+
+  @Column({ name: 'photo_file_name', type: 'text', nullable: true })
+  photoFileName: string | null;
+
+  @Column({ name: 'photo_content_type', type: 'text', nullable: true })
+  photoContentType: string | null;
+
+  @Column({ name: 'photo_storage_key', type: 'text', nullable: true })
+  photoStorageKey: string | null;
+
+  @Column({ name: 'photo_size_bytes', type: 'bigint', nullable: true })
+  photoSizeBytes: string | null;
+
   @Column({ name: 'joined_on', type: 'date' })
   joinedOn: string;
 
