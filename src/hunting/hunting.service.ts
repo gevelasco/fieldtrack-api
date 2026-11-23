@@ -154,7 +154,7 @@ export class HuntingService {
     }
     const { ids } = await searchMemberIds(this.dataSource.manager, {
       clubId,
-      membership: 'caza',
+      modality: 'caza',
       terms,
       page: 1,
       pageSize: 12,

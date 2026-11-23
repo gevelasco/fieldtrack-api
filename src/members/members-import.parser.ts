@@ -1,5 +1,15 @@
 import * as XLSX from 'xlsx';
 import { WeaponPayloadDto } from './dto/member.dto';
+import { type MembersImportParseOptions } from './members-import-catalog';
+import { resolveMemberFieldFromHeader } from './members-import-flex';
+import { normalizeKey } from './members-import-keys';
+import { extractInlineWeaponsFromRow, type InlineWeaponSlot } from './members-import-weapons-inline';
+import {
+  findMemberSheetHeaderRowIndex,
+  groupMemberImportRows,
+  normalizeCurpImport,
+} from './members-import-grouping';
+import { readImportWorkbook } from './members-import-workbook';
 
 export interface ParsedImportMemberRow {
   sheetRow: number;
@@ -8,10 +18,15 @@ export interface ParsedImportMemberRow {
   paternalSurname: string;
   maternalSurname: string;
   membershipRaw: string;
+  membershipModalityRaw: string;
   email: string;
   phone: string;
   joinedOnRaw: string;
   sexRaw: string;
+  curp: string;
+  rfc: string;
+  address: string;
+  inlineWeapons: InlineWeaponSlot[];
 }
 
 export interface ParsedImportWeaponRow {
@@ -27,7 +42,7 @@ export interface ParsedImportWeaponRow {
   registeredOnRaw: string;
 }
 
-const SOCIOS_SHEET_NAMES = ['socios', 'socio', 'members'];
+const SOCIOS_SHEET_NAMES = ['socios', 'socio', 'members', 'reporte', 'padron', 'coliman'];
 const ARMAS_SHEET_NAMES = ['armas', 'arma', 'weapons'];
 
 const MEMBER_ALIASES: Record<string, keyof ParsedImportMemberRow | 'skip'> = {
@@ -45,7 +60,9 @@ const MEMBER_ALIASES: Record<string, keyof ParsedImportMemberRow | 'skip'> = {
   tipo_membresia: 'membershipRaw',
   membresia: 'membershipRaw',
   membership: 'membershipRaw',
-  modalidad: 'membershipRaw',
+  modalidad_membresia: 'membershipModalityRaw',
+  modalidad_socio: 'membershipModalityRaw',
+  modalidad_de_socio: 'membershipModalityRaw',
   telefono: 'phone',
   phone: 'phone',
   correo: 'email',
@@ -88,6 +105,7 @@ export function buildSociosImportTemplateBuffer(membershipHints: string[]): Buff
     'apellido_paterno',
     'apellido_materno',
     'tipo_membresia',
+    'modalidad_membresia',
     'telefono',
     'correo',
     'fecha_ingreso',
@@ -98,7 +116,8 @@ export function buildSociosImportTemplateBuffer(membershipHints: string[]): Buff
     'Juan',
     'Pérez',
     'López',
-    membershipHints[0] ?? 'tiro-deportivo',
+    membershipHints[0] ?? 'general',
+    'tiro-deportivo',
     '333 123 4567',
     'juan@ejemplo.com',
     '2024-01-15',
@@ -109,7 +128,8 @@ export function buildSociosImportTemplateBuffer(membershipHints: string[]): Buff
     'Obligatorio',
     'Opcional (usa — si no aplica)',
     'Opcional',
-    `Obligatorio (${membershipHints.join(', ') || 'código del club'})`,
+    `Obligatorio (${membershipHints.join(', ') || 'código del plan'})`,
+    'Si el plan aplica a las dos: tiro-deportivo o caza; si no, déjalo vacío',
     'Opcional',
     'Opcional',
     'Opcional (aaaa-mm-dd)',
@@ -150,24 +170,40 @@ export function buildArmasImportTemplateBuffer(): Buffer {
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 }
 
-export function parseMembersImportFile(buffer: Buffer): {
+export function parseMembersImportFile(
+  buffer: Buffer,
+  options?: MembersImportParseOptions,
+): {
   members: ParsedImportMemberRow[];
   parseErrors: string[];
 } {
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+  const parsed = readImportWorkbook(buffer);
+  if ('error' in parsed) {
+    return { members: [], parseErrors: [parsed.error] };
+  }
   const parseErrors: string[] = [];
-  const sheet = findSheet(wb, SOCIOS_SHEET_NAMES) ?? singleSheet(wb);
-  const members = parseMemberSheet(sheet, parseErrors);
+  const sheet = resolveMembersImportSheet(parsed.workbook, options);
+  const members = parseMemberSheet(sheet, parseErrors, options);
   return { members, parseErrors };
+}
+
+function resolveMembersImportSheet(wb: XLSX.WorkBook, options?: MembersImportParseOptions): XLSX.WorkSheet | null {
+  if (options?.sheetName && wb.Sheets[options.sheetName]) {
+    return wb.Sheets[options.sheetName] ?? null;
+  }
+  return findSheet(wb, SOCIOS_SHEET_NAMES) ?? detectMemberSheet(wb) ?? singleSheet(wb);
 }
 
 export function parseWeaponsImportFile(buffer: Buffer): {
   weapons: ParsedImportWeaponRow[];
   parseErrors: string[];
 } {
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+  const parsed = readImportWorkbook(buffer);
+  if ('error' in parsed) {
+    return { weapons: [], parseErrors: [parsed.error] };
+  }
   const parseErrors: string[] = [];
-  const sheet = findSheet(wb, ARMAS_SHEET_NAMES) ?? singleSheet(wb);
+  const sheet = findSheet(parsed.workbook, ARMAS_SHEET_NAMES) ?? singleSheet(parsed.workbook);
   const weapons = parseWeaponSheet(sheet, parseErrors);
   return { weapons, parseErrors };
 }
@@ -189,53 +225,85 @@ function findSheet(wb: XLSX.WorkBook, names: string[]): XLSX.WorkSheet | null {
       return wb.Sheets[name];
     }
   }
-  const target = new Set(names);
+  const target = new Set(names.map((name) => normalizeKey(name)));
   for (const sheetName of wb.SheetNames) {
-    if (target.has(normalizeKey(sheetName))) {
+    const key = normalizeKey(sheetName);
+    if (target.has(key)) {
       return wb.Sheets[sheetName];
+    }
+    for (const hint of names) {
+      const hintKey = normalizeKey(hint);
+      if (hintKey.length >= 4 && key.includes(hintKey)) {
+        return wb.Sheets[sheetName];
+      }
     }
   }
   return null;
 }
 
-function parseMemberSheet(sheet: XLSX.WorkSheet | null, errors: string[]): ParsedImportMemberRow[] {
+function parseMemberSheet(
+  sheet: XLSX.WorkSheet | null,
+  errors: string[],
+  options?: MembersImportParseOptions,
+): ParsedImportMemberRow[] {
   if (!sheet) {
-    errors.push('No se encontró la hoja "Socios". Usa la plantilla de socios.');
+    errors.push(
+      'No se encontró una hoja de socios. Usa la plantilla o un Excel con columnas como numero_socio, nombre y CURP.',
+    );
     return [];
   }
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '', raw: false });
-  const members: ParsedImportMemberRow[] = [];
-  rows.forEach((raw, index) => {
-    const sheetRow = index + 2;
-    const mapped = mapRow(raw, MEMBER_ALIASES);
-    if (isNotesRow(mapped.memberNumber)) {
-      return;
-    }
-    const memberNumber = cellText(mapped.memberNumber);
-    const firstName = cellText(mapped.firstName);
-    const membershipRaw = cellText(mapped.membershipRaw);
-    if (!memberNumber && !firstName && !membershipRaw) {
-      return;
-    }
-    if (!memberNumber || !firstName || !membershipRaw) {
-      errors.push(`Socios fila ${sheetRow}: faltan numero_socio, nombre o tipo_membresia.`);
-      return;
-    }
-    members.push({
-      sheetRow,
-      memberNumber,
-      firstName,
-      paternalSurname: cellText(mapped.paternalSurname) || '—',
-      maternalSurname: cellText(mapped.maternalSurname),
-      membershipRaw,
-      email: cellText(mapped.email),
-      phone: cellText(mapped.phone),
-      joinedOnRaw: cellText(mapped.joinedOnRaw),
-      sexRaw: cellText(mapped.sexRaw),
-    });
+  const headerRowIndex = options?.headerRowIndex ?? findMemberSheetHeaderRowIndex(sheet);
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+    defval: '',
+    raw: false,
+    range: headerRowIndex,
   });
-  return members;
+  const grouped = groupMemberImportRows(rows, headerRowIndex, errors, options?.columnMapping);
+  return grouped.map((row) => ({
+    sheetRow: row.sheetRow,
+    memberNumber: row.memberNumber,
+    firstName: row.firstName,
+    paternalSurname: row.paternalSurname,
+    maternalSurname: row.maternalSurname,
+    membershipRaw: row.membershipRaw,
+    membershipModalityRaw: row.membershipModalityRaw,
+    email: row.email,
+    phone: row.phone,
+    joinedOnRaw: row.joinedOnRaw,
+    sexRaw: row.sexRaw,
+    curp: row.curp,
+    rfc: row.rfc,
+    address: row.address,
+    inlineWeapons: row.inlineWeapons,
+  }));
 }
+
+function detectMemberSheet(wb: XLSX.WorkBook): XLSX.WorkSheet | null {
+  for (const name of wb.SheetNames) {
+    const sheet = wb.Sheets[name];
+    if (!sheet) {
+      continue;
+    }
+    const headerRowIndex = findMemberSheetHeaderRowIndex(sheet);
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as unknown[][];
+    const headerRow = rows[headerRowIndex];
+    if (!Array.isArray(headerRow)) {
+      continue;
+    }
+    const fields = headerRow
+      .map((cell) => (typeof cell === 'string' || typeof cell === 'number' ? String(cell) : ''))
+      .map((header) => resolveMemberFieldFromHeader(header))
+      .filter(Boolean);
+    const hasNumber = fields.includes('memberNumber');
+    const hasPerson = fields.includes('fullName') || fields.includes('firstName') || fields.includes('curp');
+    if (hasNumber && hasPerson) {
+      return sheet;
+    }
+  }
+  return null;
+}
+
+export { normalizeCurpImport };
 
 function parseWeaponSheet(sheet: XLSX.WorkSheet | null, errors: string[]): ParsedImportWeaponRow[] {
   if (!sheet) {
@@ -301,14 +369,6 @@ function isNotesRow(firstCell: unknown): boolean {
   return text === 'obligatorio' || text.startsWith('opcional') || text.startsWith('debe existir');
 }
 
-function normalizeKey(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/\p{M}/gu, '')
-    .replace(/\s+/g, '_');
-}
 
 function cellText(value: unknown): string {
   if (value == null) {
@@ -335,6 +395,12 @@ export function parseIsoDateInput(raw: string, fallback: string): string {
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
     return trimmed;
   }
+  const es = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(trimmed);
+  if (es) {
+    const day = String(Number(es[1])).padStart(2, '0');
+    const month = String(Number(es[2])).padStart(2, '0');
+    return `${es[3]}-${month}-${day}`;
+  }
   const parsed = new Date(trimmed);
   if (!Number.isNaN(parsed.getTime())) {
     return formatIsoDate(parsed);
@@ -360,12 +426,46 @@ const PLATFORMS = new Set(['pistola', 'revolver', 'escopeta', 'rifle', 'otro']);
 const WEAPON_MODALITIES = new Set(['proteccion-domicilio', 'proteccion-parcela', 'tiro-deportivo', 'caceria']);
 
 export function parsePlatformInput(raw: string): WeaponPayloadDto['platform'] {
-  const value = normalizeKey(raw).replace(/_/g, '-');
+  const text = raw.trim();
+  if (!text) {
+    return 'otro';
+  }
+  const folded = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '');
+  // Palabra clave aunque venga rodeada (p. ej. «ESCOPETA UN CAÑON…», «RIFLE SEMI AUTOMATICO»).
+  if (folded.includes('escopeta')) {
+    return 'escopeta';
+  }
+  if (folded.includes('rifle')) {
+    return 'rifle';
+  }
+  if (folded.includes('revolv')) {
+    return 'revolver';
+  }
+  if (folded.includes('pistola')) {
+    return 'pistola';
+  }
+  const value = normalizeKey(text).replace(/_/g, '-');
   if (PLATFORMS.has(value)) {
     return value as WeaponPayloadDto['platform'];
   }
-  if (value === 'revolver' || value.includes('revolv')) {
-    return 'revolver';
+  return 'otro';
+}
+
+export function resolveImportWeaponPlatform(parts: {
+  platformRaw?: string;
+  brand?: string;
+  model?: string;
+  caliber?: string;
+}): WeaponPayloadDto['platform'] {
+  const candidates = [parts.platformRaw, parts.model, parts.brand, parts.caliber];
+  for (const raw of candidates) {
+    const parsed = parsePlatformInput(raw ?? '');
+    if (parsed !== 'otro') {
+      return parsed;
+    }
   }
   return 'otro';
 }

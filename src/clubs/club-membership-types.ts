@@ -2,6 +2,8 @@ import { Repository } from 'typeorm';
 import { Club } from './entities/club.entity';
 import { ClubMembershipType } from './entities/club-membership-type.entity';
 
+import { normalizeMembershipBillingPeriod, type MembershipBillingPeriod } from '../members/membership-billing';
+
 export interface MembershipTypeRow {
   code: string;
   name: string;
@@ -10,6 +12,9 @@ export interface MembershipTypeRow {
   endMonth: number;
   endDay: number;
   feeMxn: number;
+  billingPeriod: MembershipBillingPeriod;
+  allowsSportShooting: boolean;
+  allowsHunting: boolean;
   sortOrder: number;
   createdAt: Date;
 }
@@ -32,6 +37,9 @@ export async function loadMembershipTypes(
     endMonth: row.endMonth,
     endDay: row.endDay,
     feeMxn: Number(row.feeMxn),
+    billingPeriod: normalizeMembershipBillingPeriod(row.billingPeriod),
+    allowsSportShooting: row.allowsSportShooting,
+    allowsHunting: row.allowsHunting,
     sortOrder: row.sortOrder,
     createdAt: row.createdAt,
   }));
@@ -39,47 +47,39 @@ export async function loadMembershipTypes(
 
 export function membershipTypesFromClub(club: Club): MembershipTypeRow[] {
   const seededAt = new Date();
+  const fee = Number(club.sportShootingFeeMxn) || Number(club.huntingFeeMxn);
   return [
     {
-      code: 'tiro-deportivo',
-      name: 'Tiro deportivo',
+      code: 'general',
+      name: 'Membresía general',
       startMonth: club.sportShootingStartMonth,
       startDay: club.sportShootingStartDay,
       endMonth: club.sportShootingEndMonth,
       endDay: club.sportShootingEndDay,
-      feeMxn: Number(club.sportShootingFeeMxn),
+      feeMxn: fee,
+      billingPeriod: 'anual',
+      allowsSportShooting: true,
+      allowsHunting: true,
       sortOrder: 0,
-      createdAt: seededAt,
-    },
-    {
-      code: 'caza',
-      name: 'Cacería',
-      startMonth: club.huntingStartMonth,
-      startDay: club.huntingStartDay,
-      endMonth: club.huntingEndMonth,
-      endDay: club.huntingEndDay,
-      feeMxn: Number(club.huntingFeeMxn),
-      sortOrder: 1,
       createdAt: seededAt,
     },
   ];
 }
 
+/** Conserva las tarifas del club alineadas al plan «general» u homólogo, si existe. */
 export function syncLegacyClubColumns(club: Club, types: readonly MembershipTypePatchRow[]): void {
-  for (const row of types) {
-    if (row.code === 'tiro-deportivo') {
-      club.sportShootingFeeMxn = String(row.feeMxn);
-      club.sportShootingStartMonth = row.startMonth;
-      club.sportShootingStartDay = row.startDay;
-      club.sportShootingEndMonth = row.endMonth;
-      club.sportShootingEndDay = row.endDay;
-    }
-    if (row.code === 'caza') {
-      club.huntingFeeMxn = String(row.feeMxn);
-      club.huntingStartMonth = row.startMonth;
-      club.huntingStartDay = row.startDay;
-      club.huntingEndMonth = row.endMonth;
-      club.huntingEndDay = row.endDay;
-    }
+  const general = types.find((row) => row.code === 'general');
+  if (general) {
+    club.sportShootingFeeMxn = String(general.feeMxn);
+    club.huntingFeeMxn = String(general.feeMxn);
+    return;
+  }
+  const sport = types.find((row) => row.allowsSportShooting && !row.allowsHunting);
+  const hunting = types.find((row) => row.allowsHunting && !row.allowsSportShooting);
+  if (sport) {
+    club.sportShootingFeeMxn = String(sport.feeMxn);
+  }
+  if (hunting) {
+    club.huntingFeeMxn = String(hunting.feeMxn);
   }
 }

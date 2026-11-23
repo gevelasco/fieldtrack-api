@@ -1,4 +1,5 @@
 import { Repository } from 'typeorm';
+import { type DocumentValidityCode, normalizeValidityCode } from './document-validity';
 import { ClubMemberDocumentDef } from './entities/club-member-document-def.entity';
 
 export interface ClubDocumentDefRow {
@@ -6,6 +7,7 @@ export interface ClubDocumentDefRow {
   label: string;
   sortOrder: number;
   effectiveFromYear: number | null;
+  validityCode: DocumentValidityCode;
   createdAt: Date;
 }
 
@@ -22,6 +24,7 @@ export async function loadClubDocumentDefs(
     label: row.label,
     sortOrder: row.sortOrder,
     effectiveFromYear: row.effectiveFromYear,
+    validityCode: normalizeValidityCode(row.validityCode),
     createdAt: row.createdAt,
   }));
 }

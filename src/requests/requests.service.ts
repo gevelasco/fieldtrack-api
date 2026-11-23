@@ -428,7 +428,7 @@ export class RequestsService {
           kind: 'request_in_progress',
           category: 'update',
           title: 'Solicitud en proceso',
-          detail: `${detail.code} · ${detail.title}. Ya puedes revisarla y enviar tu respuesta.`,
+          detail: `${detail.code} · ${detail.title}. El club comenzó a trabajarla.`,
           requestId,
           dedupeKey: `request-in-progress:${requestId}:${detail.updatedAt}`,
         });
@@ -448,9 +448,7 @@ export class RequestsService {
 
   async addDocument(clubId: number, requestId: number, actor: AppUser, dto: RequestFileDto) {
     if (actor.role === 'socio') {
-      throw new ForbiddenException(
-        'Usa «Enviar a revisión» para adjuntar archivos cuando la solicitud esté en proceso.',
-      );
+      throw new ForbiddenException('Usa «Enviar a revisión» en el portal para adjuntar archivos libres.');
     }
     const file = decodeRequestFile(dto);
     await this.dataSource.transaction(async (manager) => {
@@ -474,7 +472,7 @@ export class RequestsService {
       const current = await this.load(manager, clubId, requestId);
       if (actor.role === 'socio') {
         await this.assertRequestReadable(clubId, actor, current);
-        requireMemberInProgress(current);
+        requireMemberCanRespond(current);
       } else {
         requireWorker(actor);
         requireOpen(current);
@@ -513,7 +511,7 @@ export class RequestsService {
     await this.dataSource.transaction(async (manager) => {
       const current = await this.load(manager, clubId, requestId);
       await this.assertRequestReadable(clubId, actor, current);
-      requireMemberInProgress(current);
+      requireMemberCanRespond(current);
       requireOpen(current);
       if (files.length && (current.documentSlots?.length || current.weaponIds?.length)) {
         throw new BadRequestException('Sube cada archivo en su lugar dentro de la lista de la solicitud.');
@@ -552,7 +550,7 @@ export class RequestsService {
     return detail;
   }
 
-  /** Socio (en proceso) o staff suben el archivo de un documento o arma pedidos; queda por revisar. */
+  /** Socio (nueva o en proceso) o staff suben el archivo de un documento o arma pedidos; queda por revisar. */
   async uploadItem(clubId: number, requestId: number, actor: AppUser, dto: RequestItemFileDto) {
     const file = decodeRequestFile(dto);
     const byWorker = WORKER_ROLES.has(actor.role);
@@ -564,7 +562,7 @@ export class RequestsService {
         requireOpen(current);
       } else {
         await this.assertRequestReadable(clubId, actor, current);
-        requireMemberInProgress(current);
+        requireMemberCanRespond(current);
       }
       const item = (await this.itemsOf(manager, current)).find((candidate) =>
         dto.slot != null ? candidate.slot === dto.slot : candidate.weaponId === Number(dto.weaponId),
@@ -1181,13 +1179,8 @@ function requireOpen(request: ClubRequest) {
   }
 }
 
-function requireMemberInProgress(request: ClubRequest) {
-  if (request.status === 'new') {
-    throw new ConflictException(
-      'La solicitud aún está nueva. El club debe pasarla a «En proceso» antes de que puedas responder.',
-    );
-  }
-  if (request.status !== 'in_progress') {
+function requireMemberCanRespond(request: ClubRequest) {
+  if (request.status !== 'new' && request.status !== 'in_progress') {
     throw new ConflictException('Esta solicitud ya no acepta respuestas del socio.');
   }
 }

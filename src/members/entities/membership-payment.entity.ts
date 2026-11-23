@@ -26,7 +26,7 @@ export class MembershipPayment {
   member: Member;
 
   @Column({ type: 'text' })
-  membership: string;
+  modality: string;
 
   @Column({ name: 'paid_on', type: 'date' })
   paidOn: string;

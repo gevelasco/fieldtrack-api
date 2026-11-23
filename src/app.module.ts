@@ -14,6 +14,7 @@ import { ChecklistModule } from './checklist/checklist.module';
 import { EventsModule } from './events/events.module';
 import { CompetitionsModule } from './competitions/competitions.module';
 import { RecaudacionModule } from './recaudacion/recaudacion.module';
+import { ReportesModule } from './reportes/reportes.module';
 import { HuntingModule } from './hunting/hunting.module';
 import { MembersModule } from './members/members.module';
 import { NotificationsModule } from './notifications/notifications.module';
@@ -46,6 +47,7 @@ import EnvConfig from './types/env-config.type';
     HuntingModule,
     CompetitionsModule,
     RecaudacionModule,
+    ReportesModule,
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService<EnvConfig>) => ({

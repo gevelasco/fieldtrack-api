@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { formatMemberNumber } from '../clubs/member-number';
 import { loadMembershipTypes, membershipTypesFromClub } from '../clubs/club-membership-types';
+import { resolveImportMembershipWithDefault } from '../clubs/membership-plans';
 import { ClubMembershipType } from '../clubs/entities/club-membership-type.entity';
 import { Club } from '../clubs/entities/club.entity';
 import { AppUser } from '../users/entities/app-user.entity';
@@ -10,18 +11,23 @@ import { CreateMemberDto, WeaponPayloadDto } from './dto/member.dto';
 import { MemberWeapon } from './entities/member-weapon.entity';
 import { Member } from './entities/member.entity';
 import {
+  type MembersImportParseOptions,
+  parseColumnMappingJson,
+} from './members-import-catalog';
+import {
   buildArmasImportTemplateBuffer,
   buildSociosImportTemplateBuffer,
   normalizeWeaponSerial,
   parseBoolInput,
   parseIsoDateInput,
   parseMembersImportFile,
-  parsePlatformInput,
+  resolveImportWeaponPlatform,
   parseSexInput,
   parseWeaponModalityInput,
   parseWeaponsImportFile,
   resolveMembershipCode,
 } from './members-import.parser';
+import { buildMemberImportPreview, type MemberImportPreview } from './members-import-preview';
 import { MembersService } from './members.service';
 
 export interface MemberImportResult {
@@ -48,7 +54,7 @@ export class MembersImportService {
   ) {}
 
   buildMembersTemplate(clubId: number): Promise<Buffer> {
-    return this.membershipCodes(clubId).then((allowed) =>
+    return this.membershipPlans(clubId).then((allowed) =>
       buildSociosImportTemplateBuffer(allowed.map((row) => row.code)),
     );
   }
@@ -57,18 +63,31 @@ export class MembersImportService {
     return buildArmasImportTemplateBuffer();
   }
 
-  async importMembersFile(clubId: number, actor: AppUser, buffer: Buffer): Promise<MemberImportResult> {
+  previewMembersFile(buffer: Buffer, options?: MembersImportParseOptions): MemberImportPreview {
     if (!buffer?.length) {
-      throw new BadRequestException('Sube un archivo Excel (.xlsx).');
+      throw new BadRequestException('Sube un archivo Excel (.xlsx o .xls).');
+    }
+    return buildMemberImportPreview(buffer, options);
+  }
+
+  async importMembersFile(
+    clubId: number,
+    actor: AppUser,
+    buffer: Buffer,
+    options?: MembersImportParseOptions,
+  ): Promise<MemberImportResult> {
+    if (!buffer?.length) {
+      throw new BadRequestException('Sube un archivo Excel (.xlsx o .xls).');
     }
     const club = await this.requireClub(clubId);
-    const allowed = await this.membershipCodes(clubId);
-    const { members, parseErrors } = parseMembersImportFile(buffer);
+    const allowed = await this.membershipPlans(clubId);
+    const createContext = { club, plans: allowed };
+    const { members, parseErrors } = parseMembersImportFile(buffer, options);
     if (members.length === 0 && parseErrors.length === 0) {
       throw new BadRequestException('No hay filas de socios para importar.');
     }
 
-    const existingNumbers = new Set(await this.members.numbers(clubId));
+    const existingNumbers = await this.loadMemberNumberLookupKeys(clubId, club.memberNumberPrefix);
     const seenInFile = new Set<string>();
     const errors = [...parseErrors];
     let created = 0;
@@ -83,9 +102,10 @@ export class MembersImportService {
         errors.push(`Socios fila ${row.sheetRow}: número de socio no válido.`);
         continue;
       }
-      if (existingNumbers.has(formattedNumber)) {
+      const importKeys = memberNumberLookupKeys(club.memberNumberPrefix, row.memberNumber);
+      if (importKeys.some((key) => existingNumbers.has(key))) {
         skipped += 1;
-        errors.push(`Socios fila ${row.sheetRow}: ${formattedNumber} ya existe; se omitió.`);
+        errors.push(`Socios fila ${row.sheetRow}: ${formattedNumber} ya existe en el club; se omitió.`);
         continue;
       }
       if (seenInFile.has(formattedNumber)) {
@@ -95,15 +115,18 @@ export class MembersImportService {
       }
       seenInFile.add(formattedNumber);
 
-      const membership = resolveMembershipCode(row.membershipRaw, allowed);
-      if (!membership) {
+      const resolved = resolveImportMembershipWithDefault(row.membershipRaw, row.membershipModalityRaw, allowed);
+      if (!resolved) {
         failed += 1;
         errors.push(
-          `Socios fila ${row.sheetRow}: tipo_membresia "${row.membershipRaw}" no coincide con los del club.`,
+          `Socios fila ${row.sheetRow}: tipo_membresia/modalidad no válidos («${row.membershipRaw}» / «${row.membershipModalityRaw || 'vacío'}»).`,
         );
         continue;
       }
       const joinedOn = parseIsoDateInput(row.joinedOnRaw, today);
+      const weapons = row.inlineWeapons.map((slot, index) =>
+        inlineWeaponToPayload(slot, today, `Socios fila ${row.sheetRow} arma ${index + 1}`),
+      ).filter((weapon): weapon is WeaponPayloadDto => weapon !== null);
       const dto: CreateMemberDto = {
         memberNumber: row.memberNumber,
         firstName: row.firstName,
@@ -111,19 +134,33 @@ export class MembersImportService {
         maternalSurname: row.maternalSurname || undefined,
         email: row.email || undefined,
         phone: row.phone || undefined,
-        curp: 'AAAA000000HAAAAA0A',
-        rfc: 'XAXX010101000',
+        curp: row.curp,
+        rfc: normalizeRfcImport(row.rfc),
+        address: row.address || undefined,
         joinedOn,
         sex: parseSexInput(row.sexRaw),
-        membership: membership as CreateMemberDto['membership'],
+        modality: resolved.modality,
+        membership: resolved.planCode,
+        weapons: weapons.length > 0 ? weapons : undefined,
       };
       try {
-        await this.members.create(clubId, actor, dto, { quiet: true });
+        await this.members.create(clubId, actor, dto, { quiet: true, ...createContext });
         created += 1;
-        existingNumbers.add(formattedNumber);
+        for (const key of importKeys) {
+          existingNumbers.add(key);
+        }
       } catch (error) {
+        const message = importErrorMessage(error);
+        if (isDuplicateMemberImportError(message)) {
+          skipped += 1;
+          errors.push(`Socios fila ${row.sheetRow}: ${formattedNumber} ya existe en el club; se omitió.`);
+          for (const key of importKeys) {
+            existingNumbers.add(key);
+          }
+          continue;
+        }
         failed += 1;
-        errors.push(`Socios fila ${row.sheetRow}: ${importErrorMessage(error)}`);
+        errors.push(`Socios fila ${row.sheetRow}: ${message}`);
       }
     }
 
@@ -136,7 +173,7 @@ export class MembersImportService {
 
   async importWeaponsFile(clubId: number, actor: AppUser, buffer: Buffer): Promise<WeaponImportResult> {
     if (!buffer?.length) {
-      throw new BadRequestException('Sube un archivo Excel (.xlsx).');
+      throw new BadRequestException('Sube un archivo Excel (.xlsx o .xls).');
     }
     const club = await this.requireClub(clubId);
     const { weapons, parseErrors } = parseWeaponsImportFile(buffer);
@@ -194,14 +231,19 @@ export class MembersImportService {
         model: row.model,
         caliber: row.caliber,
         serialNumber: serial,
-        platform: parsePlatformInput(row.platformRaw),
+        platform: resolveImportWeaponPlatform({
+          platformRaw: row.platformRaw,
+          brand: row.brand,
+          model: row.model,
+          caliber: row.caliber,
+        }),
         modality: parseWeaponModalityInput(row.modalityRaw),
         hasPeta: parseBoolInput(row.hasPetaRaw),
         registeredOn: parseIsoDateInput(row.registeredOnRaw, today),
       };
 
       try {
-        await this.members.appendWeaponsForImport(clubId, memberId, [payload]);
+        await this.members.appendWeaponsForImport(clubId, memberId, [payload], actor.id);
         created += 1;
         serialsInFile.add(serial);
         existingSerials.add(serial);
@@ -237,13 +279,13 @@ export class MembersImportService {
     return club;
   }
 
-  private async membershipCodes(clubId: number) {
+  private async membershipPlans(clubId: number) {
     const club = await this.requireClub(clubId);
     let types = await loadMembershipTypes(this.membershipTypes, clubId);
     if (types.length === 0) {
       types = membershipTypesFromClub(club);
     }
-    return types.map((row) => ({ code: row.code, name: row.name }));
+    return types;
   }
 
   private async loadMemberIds(clubId: number): Promise<Map<string, number>> {
@@ -268,6 +310,19 @@ export class MembersImportService {
     return new Set(rows.map((row) => normalizeWeaponSerial(row.serial)).filter(Boolean));
   }
 
+  private async loadMemberNumberLookupKeys(
+    clubId: number,
+    prefix: string | null | undefined,
+  ): Promise<Set<string>> {
+    const keys = new Set<string>();
+    for (const stored of await this.members.numbers(clubId)) {
+      for (const key of memberNumberLookupKeys(prefix, stored)) {
+        keys.add(key);
+      }
+    }
+    return keys;
+  }
+
   private async loadWeaponCounts(clubId: number): Promise<Map<number, number>> {
     const rows = await this.weaponRows
       .createQueryBuilder('weapon')
@@ -286,6 +341,72 @@ export class MembersImportService {
 
 function normalizeMemberKey(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function normalizeRfcImport(raw: string): string {
+  const rfc = raw.trim().toUpperCase();
+  if (/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(rfc)) {
+    return rfc;
+  }
+  return 'XAXX010101000';
+}
+
+function inlineWeaponToPayload(
+  slot: import('./members-import-weapons-inline').InlineWeaponSlot,
+  today: string,
+  label: string,
+): WeaponPayloadDto | null {
+  const brand = (slot.brand ?? '').trim();
+  const model = (slot.model ?? '').trim();
+  const caliber = (slot.caliber ?? '').trim();
+  if (!brand || !model || !caliber) {
+    return null;
+  }
+  const serial = normalizeWeaponSerial(slot.serialNumber ?? '');
+  return {
+    brand,
+    model,
+    caliber,
+    serialNumber: serial,
+    platform: resolveImportWeaponPlatform({
+      platformRaw: slot.platformRaw,
+      brand: slot.brand,
+      model: slot.model,
+      caliber: slot.caliber,
+    }),
+    modality: parseWeaponModalityInput(slot.modalityRaw ?? ''),
+    hasPeta: parseBoolInput(slot.hasPetaRaw ?? ''),
+    registeredOn: parseIsoDateInput(slot.registeredOnRaw ?? '', today),
+  };
+}
+
+function memberNumberLookupKeys(prefix: string | null | undefined, raw: string): string[] {
+  const trimmed = raw.trim();
+  const formatted = formatMemberNumber(prefix, trimmed);
+  const digits = trimmed.replace(/\D/g, '');
+  const keys = new Set<string>();
+  if (formatted) {
+    keys.add(formatted);
+    keys.add(formatted.toLowerCase());
+  }
+  if (digits) {
+    keys.add(digits);
+    keys.add(digits.replace(/^0+/, '') || digits);
+    const padded = formatMemberNumber(prefix, digits);
+    if (padded) {
+      keys.add(padded);
+    }
+  }
+  if (trimmed) {
+    keys.add(trimmed);
+    keys.add(trimmed.toLowerCase());
+  }
+  return [...keys];
+}
+
+function isDuplicateMemberImportError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes('número de socio ya existe') || normalized.includes('numero de socio ya existe');
 }
 
 function importErrorMessage(error: unknown): string {

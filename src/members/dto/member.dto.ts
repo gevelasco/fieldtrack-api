@@ -14,9 +14,10 @@ import {
   ValidateNested,
 } from 'class-validator';
 
+import { MEMBERSHIP_MODALITY_SLUG } from '../../clubs/club-member-modalities';
+
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const SEX = ['hombre', 'mujer', 'otro'] as const;
-const MEMBERSHIP = ['tiro-deportivo', 'caza'] as const;
 const PLATFORM = ['pistola', 'revolver', 'escopeta', 'rifle', 'otro'] as const;
 const WEAPON_MODALITY = [
   'proteccion-domicilio',
@@ -183,8 +184,15 @@ export class CreateMemberDto {
   @IsIn(SEX)
   sex: (typeof SEX)[number];
 
-  @IsIn(MEMBERSHIP)
-  membership: (typeof MEMBERSHIP)[number];
+  @IsString()
+  @Matches(MEMBERSHIP_MODALITY_SLUG)
+  @MaxLength(64)
+  modality: string;
+
+  @IsString()
+  @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+  @MaxLength(64)
+  membership: string;
 
   @IsOptional()
   @ArrayMaxSize(10)
@@ -250,8 +258,15 @@ export class UpdateMemberDto {
   @IsIn(SEX)
   sex: (typeof SEX)[number];
 
-  @IsIn(MEMBERSHIP)
-  membership: (typeof MEMBERSHIP)[number];
+  @IsString()
+  @Matches(MEMBERSHIP_MODALITY_SLUG)
+  @MaxLength(64)
+  modality: string;
+
+  @IsString()
+  @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+  @MaxLength(64)
+  membership: string;
 
   @IsOptional()
   @ArrayMaxSize(8)
@@ -285,8 +300,10 @@ export class ListMembersQueryDto {
   search?: string;
 
   @IsOptional()
-  @IsIn(MEMBERSHIP)
-  membership?: (typeof MEMBERSHIP)[number];
+  @IsString()
+  @Matches(MEMBERSHIP_MODALITY_SLUG)
+  @MaxLength(64)
+  modality?: string;
 
   @IsOptional()
   @Type(() => Number)

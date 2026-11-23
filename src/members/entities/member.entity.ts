@@ -82,6 +82,11 @@ export class Member {
   @Column({ type: 'text' })
   sex: string;
 
+  /** Tiro deportivo o cacería (actividad del socio). */
+  @Column({ type: 'text' })
+  modality: string;
+
+  /** Código del plan de membresía configurado en el club. */
   @Column({ type: 'text' })
   membership: string;
 

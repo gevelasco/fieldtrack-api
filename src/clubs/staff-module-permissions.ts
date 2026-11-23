@@ -7,6 +7,7 @@ export const STAFF_MODULE_IDS = [
   'hunting',
   'competitions',
   'recaudacion',
+  'reportes',
   'configuracion',
 ] as const;
 
@@ -23,6 +24,7 @@ const EMPTY: StaffModulePermissions = {
   hunting: null,
   competitions: null,
   recaudacion: null,
+  reportes: null,
   configuracion: null,
 };
 

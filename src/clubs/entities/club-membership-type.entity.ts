@@ -35,6 +35,15 @@ export class ClubMembershipType {
   @Column({ name: 'fee_mxn', type: 'numeric', precision: 12, scale: 2, default: 0 })
   feeMxn: string;
 
+  @Column({ name: 'allows_sport_shooting', type: 'boolean', default: true })
+  allowsSportShooting: boolean;
+
+  @Column({ name: 'allows_hunting', type: 'boolean', default: true })
+  allowsHunting: boolean;
+
+  @Column({ name: 'billing_period', type: 'text', default: 'anual' })
+  billingPeriod: string;
+
   @Column({ name: 'sort_order', type: 'smallint', default: 0 })
   sortOrder: number;
 

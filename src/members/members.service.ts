@@ -22,11 +22,17 @@ import {
 } from '../common/file/stored-file.util';
 import { hashPassword } from '../common/hash-password';
 import { assertStaffModuleAccess } from '../clubs/staff-access';
+import { loadMembershipTypes, membershipTypesFromClub } from '../clubs/club-membership-types';
+import { assertModalityEnabledForClub } from '../clubs/club-member-modalities';
+import { assertPlanAllowsModality } from '../clubs/membership-plans';
 import { Club } from '../clubs/entities/club.entity';
+import { ClubMembershipType } from '../clubs/entities/club-membership-type.entity';
 import { formatMemberNumber } from '../clubs/member-number';
 import { isUniqueViolation, NotificationsService } from '../notifications/notifications.service';
 import { AppUser } from '../users/entities/app-user.entity';
 import { UserPreferences } from '../users/entities/user-preferences.entity';
+import { insertWeaponRegistryMovement, snapshotFromWeapon } from './weapon-registry-movements';
+import { assertWeaponAssignment } from './weapon-assignment-rules';
 import {
   CreateMemberDto,
   DocumentPayloadDto,
@@ -55,17 +61,31 @@ import {
   memberDisplayName,
   modalityAllowsPeta,
 } from './member.mapper';
+import { MembershipCode, membershipPeriod, withinPeriod } from './membership-status';
 import {
-  firstPaymentDate,
-  MembershipCode,
-  membershipPeriod,
-  pendingPeriods,
-  periodCovered,
-  periodLabel,
-  resolveMemberStatus,
-  withinPeriod,
-} from './membership-status';
+  billingSliceForDate,
+  billingSliceForStart,
+  firstPaymentDateForPlan,
+  pendingBillingPeriods,
+  periodCoveredForPlan,
+  resolveMemberStatusForPlan,
+  ruleFromPlan,
+  type MembershipBillingPeriod,
+} from './membership-billing';
 import {
+  membershipAlreadyPaidMessage,
+  membershipPaymentLineTitle,
+  membershipPaymentRegisteredDetail,
+  membershipPaymentRegisteredTitle,
+  membershipPaymentRevertedDetail,
+  membershipPaymentRevertedTitle,
+  membershipPayOldestPendingMessage,
+  membershipSlicePaidMessage,
+  planDisplayName,
+} from './membership-payment-line';
+import { type MembershipTypeRow } from '../clubs/club-membership-types';
+import {
+  attachListMemberExtras,
   loadMemberById,
   loadMemberByUserId,
   memberNumbers,
@@ -82,6 +102,7 @@ export class MembersService {
   constructor(
     @InjectRepository(Member) private readonly members: Repository<Member>,
     @InjectRepository(Club) private readonly clubs: Repository<Club>,
+    @InjectRepository(ClubMembershipType) private readonly membershipTypes: Repository<ClubMembershipType>,
     private readonly dataSource: DataSource,
     private readonly notifications: NotificationsService,
     private readonly config: ConfigService<EnvConfig>,
@@ -92,9 +113,19 @@ export class MembersService {
     const club = await this.requireClub(clubId);
     const pageSize = query.pageSize ?? PAGE_SIZES[0];
     const calendar = calendarFromClub(club);
+    const plans = await this.membershipPlans(clubId, club);
+    if (query.modality) {
+      assertModalityEnabledForClub(plans, query.modality);
+    }
+    const billingPeriodStarts = Object.fromEntries(
+      plans.map((plan) => [
+        plan.code,
+        billingSliceForDate(ruleFromPlan(plan), plan.billingPeriod).start,
+      ]),
+    );
     const found = await searchMemberIds(this.dataSource.manager, {
       clubId,
-      membership: query.membership,
+      modality: query.modality,
       terms: searchTerms(query.search),
       page: query.page ?? 1,
       pageSize,
@@ -106,13 +137,17 @@ export class MembersService {
               'tiro-deportivo': membershipPeriod('tiro-deportivo', calendar),
               caza: membershipPeriod('caza', calendar),
             },
+            billingPeriodStarts,
           }
         : undefined,
     });
     const rows = await membersByIds(this.members, clubId, found.ids, 'list');
+    await attachListMemberExtras(this.dataSource.manager, clubId, rows);
     const requests = await openRequestsByMember(this.dataSource.manager, clubId, found.ids);
     return {
-      items: rows.map((row) => mapMember(row, club, requests.get(row.id))),
+      items: rows.map((row) =>
+        mapMember(row, club, requests.get(row.id), { membershipTypes: plans, forList: true }),
+      ),
       total: found.total,
       page: found.page,
       pageSize,
@@ -122,9 +157,17 @@ export class MembersService {
   async summary(clubId: number) {
     const club = await this.requireClub(clubId);
     const calendar = calendarFromClub(club);
+    const plans = await this.membershipPlans(clubId, club);
+    const billingPeriodStarts = Object.fromEntries(
+      plans.map((plan) => [
+        plan.code,
+        billingSliceForDate(ruleFromPlan(plan), plan.billingPeriod).start,
+      ]),
+    );
     return memberSummary(this.dataSource.manager, clubId, {
       'tiro-deportivo': membershipPeriod('tiro-deportivo', calendar),
       caza: membershipPeriod('caza', calendar),
+      billingPeriodStarts,
     });
   }
 
@@ -139,7 +182,8 @@ export class MembersService {
       throw new NotFoundException('No se encontró el socio.');
     }
     const requests = await openRequestsByMember(this.dataSource.manager, clubId, [row.id]);
-    return mapMember(row, club, requests.get(row.id));
+    const plans = await this.membershipPlans(clubId, club);
+    return mapMember(row, club, requests.get(row.id), { membershipTypes: plans });
   }
 
   async findByUserId(clubId: number, userId: number) {
@@ -149,7 +193,20 @@ export class MembersService {
       throw new NotFoundException('No hay expediente vinculado a este usuario.');
     }
     const requests = await openRequestsByMember(this.dataSource.manager, clubId, [row.id]);
-    return mapMember(row, club, requests.get(row.id), { includePetaHistory: false });
+    const plans = await this.membershipPlans(clubId, club);
+    return mapMember(row, club, requests.get(row.id), {
+      includePetaHistory: false,
+      membershipTypes: plans,
+    });
+  }
+
+  async membershipPlans(clubId: number, club?: Club) {
+    let rows = await loadMembershipTypes(this.membershipTypes, clubId);
+    if (!rows.length) {
+      const resolvedClub = club ?? (await this.requireClub(clubId));
+      rows = membershipTypesFromClub(resolvedClub);
+    }
+    return rows;
   }
 
   async assertMemberReadable(actor: { user: AppUser; club: { id: number } }, memberId: number) {
@@ -166,8 +223,16 @@ export class MembersService {
     }
   }
 
-  async create(clubId: number, actor: AppUser, dto: CreateMemberDto, options?: { quiet?: boolean }) {
-    const club = await this.requireClub(clubId);
+  async create(
+    clubId: number,
+    actor: AppUser,
+    dto: CreateMemberDto,
+    options?: { quiet?: boolean; club?: Club; plans?: readonly MembershipTypeRow[] },
+  ) {
+    const club = options?.club ?? (await this.requireClub(clubId));
+    const plans = options?.plans ?? (await this.membershipPlans(clubId, club));
+    const modality = assertModalityEnabledForClub(plans, dto.modality);
+    const plan = assertPlanAllowsModality(plans, dto.membership, modality);
     const created = await this.dataSource.transaction(async (manager) => {
       const memberNumber = formatMemberNumber(club.memberNumberPrefix, dto.memberNumber);
       if (!memberNumber) {
@@ -198,22 +263,24 @@ export class MembersService {
           address: (dto.address ?? '').trim(),
           joinedOn: dto.joinedOn,
           sex: dto.sex,
-          membership: dto.membership,
+          modality,
+          membership: plan.code,
           status: 'vigente',
         }),
       );
       await this.writeDocuments(manager, saved.id, dto.documents ?? [], true);
       await this.writeMemberPhoto(manager, saved, dto.photo ?? undefined, false);
-      await this.writeWeapons(manager, clubId, saved.id, dto.weapons ?? []);
-      const calendar = calendarFromClub(club);
-      const paidOn = firstPaymentDate(dto.joinedOn, dto.membership, calendar);
-      const period = membershipPeriod(dto.membership, calendar);
-      const amount = feeForMembership(club, dto.membership);
+      await this.writeWeapons(manager, clubId, saved.id, dto.weapons ?? [], actor.id);
+      const rule = ruleFromPlan(plan);
+      const billingPeriod = plan.billingPeriod;
+      const paidOn = firstPaymentDateForPlan(dto.joinedOn, rule, billingPeriod);
+      const period = billingSliceForDate(rule, billingPeriod);
+      const amount = plan.feeMxn;
       const payment = await manager.getRepository(MembershipPayment).save(
         manager.getRepository(MembershipPayment).create({
           clubId,
           memberId: saved.id,
-          membership: dto.membership,
+          modality,
           paidOn,
           periodStart: period.start,
           amount: amount.toFixed(2),
@@ -221,7 +288,9 @@ export class MembersService {
         }),
       );
       saved.payments = [payment];
-      saved.status = await this.persistStatus(manager, saved, club);
+      if (!options?.quiet) {
+        saved.status = await this.persistStatus(manager, saved, club, plans);
+      }
       return { member: saved, paymentId: payment.id, paidOn, amount, period };
     }).catch(rethrowUnique);
     const member = created.member;
@@ -241,8 +310,12 @@ export class MembersService {
         clubId,
         kind: 'membership_paid',
         category: 'confirmation',
-        title: 'Anualidad registrada',
-        detail: `Se registró la anualidad ${periodLabel(created.period)} de ${formatPesos(created.amount)} de ${memberDisplayName(member)}.`,
+        title: membershipPaymentRegisteredTitle(plan.billingPeriod),
+        detail: membershipPaymentRegisteredDetail(
+          membershipPaymentLineTitle(plan.name, modality, created.period, plan.billingPeriod),
+          created.amount,
+          memberDisplayName(member),
+        ),
         entityType: 'membership_payment',
         entityId: String(created.paymentId),
         actorUserId: actor.id,
@@ -250,6 +323,9 @@ export class MembersService {
         occurredAt: new Date(`${created.paidOn}T12:00:00.000Z`),
         dedupeKey: `payment:${created.paymentId}`,
       });
+    }
+    if (options?.quiet) {
+      return { id: member.id } as Awaited<ReturnType<MembersService['findOne']>>;
     }
     return this.findOne(clubId, member.id);
   }
@@ -278,7 +354,12 @@ export class MembersService {
     });
   }
 
-  async appendWeaponsForImport(clubId: number, memberId: number, payloads: WeaponPayloadDto[]): Promise<void> {
+  async appendWeaponsForImport(
+    clubId: number,
+    memberId: number,
+    payloads: WeaponPayloadDto[],
+    actorUserId: number | null,
+  ): Promise<void> {
     if (payloads.length === 0) {
       return;
     }
@@ -293,7 +374,7 @@ export class MembersService {
       }
       for (const payload of payloads) {
         const fields = weaponFields(payload);
-        await weapons.save(
+        const saved = await weapons.save(
           weapons.create({
             clubId,
             memberId,
@@ -304,12 +385,19 @@ export class MembersService {
             sheetContent: null,
           }),
         );
+        await insertWeaponRegistryMovement(
+          manager,
+          snapshotFromWeapon(saved, 'alta', fields.registeredOn, actorUserId, saved.id),
+        );
       }
     });
   }
 
   async updateProfile(clubId: number, memberId: number, actor: AppUser, dto: UpdateMemberDto) {
     const club = await this.requireClub(clubId);
+    const plans = await this.membershipPlans(clubId, club);
+    const modality = assertModalityEnabledForClub(plans, dto.modality);
+    const plan = assertPlanAllowsModality(plans, dto.membership, modality);
     await this.dataSource.transaction(async (manager) => {
       const member = await this.requireMember(manager, clubId, memberId);
       member.firstName = requiredText(dto.firstName, 'El nombre');
@@ -321,7 +409,8 @@ export class MembersService {
       member.rfc = normalizeRfc(dto.rfc);
       member.address = (dto.address ?? '').trim();
       member.sex = dto.sex;
-      member.membership = dto.membership;
+      member.modality = modality;
+      member.membership = plan.code;
       await manager.getRepository(Member).save(member);
       await this.syncSocioAccount(manager, member);
       await this.writeDocuments(manager, member.id, dto.documents ?? [], false);
@@ -345,7 +434,7 @@ export class MembersService {
   async replaceWeapons(clubId: number, memberId: number, actor: AppUser, dto: ReplaceWeaponsDto) {
     await this.dataSource.transaction(async (manager) => {
       const member = await this.requireMember(manager, clubId, memberId);
-      await this.writeWeapons(manager, clubId, member.id, dto.weapons);
+      await this.writeWeapons(manager, clubId, member.id, dto.weapons, actor.id);
     });
     const current = await this.findOne(clubId, memberId);
     await this.notifications.record({
@@ -384,31 +473,33 @@ export class MembersService {
 
   async recordPayment(clubId: number, memberId: number, actor: AppUser, dto: RecordPaymentDto) {
     const club = await this.requireClub(clubId);
+    const plans = await this.membershipPlans(clubId, club);
     const recorded = await this.dataSource.transaction(async (manager) => {
       const member = await this.requireMember(manager, clubId, memberId);
-      const pending = pendingPeriods({
-        membership: member.membership as MembershipCode,
+      const { rule, billingPeriod, plan } = memberPlanContext(plans, member, club);
+      const pending = pendingBillingPeriods({
+        rule,
+        billingPeriod,
         joinedOn: asDate(member.joinedOn),
         payments: paymentSlices(member),
-        calendar: calendarFromClub(club),
       });
       const period = pending[0];
       if (!period) {
-        throw new ConflictException('La anualidad de este periodo ya está pagada.');
+        throw new ConflictException(membershipAlreadyPaidMessage(billingPeriod));
       }
       if (dto.periodStart && dto.periodStart !== period.start) {
         throw new ConflictException(
           pending.some((item) => item.start === dto.periodStart)
-            ? 'Primero se debe pagar la anualidad pendiente más antigua.'
-            : 'Esa anualidad ya está pagada.',
+            ? membershipPayOldestPendingMessage(billingPeriod)
+            : membershipSlicePaidMessage(billingPeriod),
         );
       }
-      const amount = feeForMembership(club, member.membership);
+      const amount = plan?.feeMxn ?? feeForMembership(club, member.modality, plans, member.membership);
       const saved = await manager.getRepository(MembershipPayment).save(
         manager.getRepository(MembershipPayment).create({
           clubId,
           memberId: member.id,
-          membership: member.membership,
+          modality: member.modality,
           paidOn: dto.paidOn,
           periodStart: period.start,
           amount: amount.toFixed(2),
@@ -417,16 +508,29 @@ export class MembersService {
       );
       member.payments = [...(member.payments ?? []), saved];
       await this.persistStatus(manager, member, club);
-      return { paymentId: saved.id, period, amount };
+      return {
+        paymentId: saved.id,
+        period,
+        amount,
+        modality: member.modality,
+        membership: member.membership,
+        billingPeriod,
+      };
     });
     const paymentId = recorded.paymentId;
     const current = await this.findOne(clubId, memberId);
+    const paymentLine = membershipPaymentLineTitle(
+      planDisplayName(plans, recorded.membership),
+      recorded.modality,
+      recorded.period,
+      recorded.billingPeriod,
+    );
     await this.notifications.record({
       clubId,
       kind: 'membership_paid',
       category: 'confirmation',
-      title: 'Anualidad registrada',
-      detail: `Se registró la anualidad ${periodLabel(recorded.period)} de ${formatPesos(recorded.amount)} de ${memberDisplayName(current)}.`,
+      title: membershipPaymentRegisteredTitle(recorded.billingPeriod),
+      detail: membershipPaymentRegisteredDetail(paymentLine, recorded.amount, memberDisplayName(current)),
       entityType: 'membership_payment',
       entityId: String(paymentId),
       actorUserId: actor.id,
@@ -442,6 +546,7 @@ export class MembersService {
       throw new ForbiddenException('Solo un administrador puede revertir pagos.');
     }
     const club = await this.requireClub(clubId);
+    const plans = await this.membershipPlans(clubId, club);
     const reverted = await this.dataSource.transaction(async (manager) => {
       const member = await this.requireMember(manager, clubId, memberId);
       const payment = (member.payments ?? []).find((item) => item.id === paymentId);
@@ -451,7 +556,8 @@ export class MembersService {
       if (payment.revertedAt) {
         throw new ConflictException('Este pago ya fue revertido.');
       }
-      const current = membershipPeriod(payment.membership as MembershipCode, calendarFromClub(club));
+      const { rule, billingPeriod } = memberPlanContext(plans, member, club);
+      const current = billingSliceForDate(rule, billingPeriod);
       if (!withinPeriod(asDate(payment.paidOn), current)) {
         throw new ConflictException('Solo se pueden revertir pagos registrados en el periodo actual.');
       }
@@ -461,28 +567,36 @@ export class MembersService {
         { id: payment.id, clubId },
         { revertedAt: payment.revertedAt, revertedByUserId: actor.id },
       );
-      const covered = periodCovered(
-        activePayments(member),
-        member.membership as 'tiro-deportivo' | 'caza',
-        calendarFromClub(club),
-      );
+      const covered = periodCoveredForPlan(activePayments(member), rule, billingPeriod);
       if (!covered && member.status === 'vigente') {
         member.status = 'pendiente';
         await manager.getRepository(Member).update({ id: member.id }, { status: 'pendiente' });
       }
-      const period = membershipPeriod(
-        payment.membership as MembershipCode,
-        calendarFromClub(club),
-        dateAt(asDate(payment.periodStart)),
-      );
-      return { member, amount: Number(payment.amount), period };
+      const period = billingSliceForStart(rule, billingPeriod, asDate(payment.periodStart));
+      return {
+        member,
+        amount: Number(payment.amount),
+        period,
+        paymentModality: payment.modality,
+        billingPeriod,
+      };
     });
+    const revertLine = membershipPaymentLineTitle(
+      planDisplayName(plans, reverted.member.membership),
+      reverted.paymentModality,
+      reverted.period,
+      reverted.billingPeriod,
+    );
     await this.notifications.record({
       clubId,
       kind: 'membership_reverted',
       category: 'reversal',
-      title: 'Anualidad revertida',
-      detail: `Se revirtió la anualidad ${periodLabel(reverted.period)} de ${formatPesos(reverted.amount)} de ${memberDisplayName(reverted.member)}.`,
+      title: membershipPaymentRevertedTitle(reverted.billingPeriod),
+      detail: membershipPaymentRevertedDetail(
+        revertLine,
+        reverted.amount,
+        memberDisplayName(reverted.member),
+      ),
       entityType: 'membership_payment',
       entityId: String(paymentId),
       actorUserId: actor.id,
@@ -682,13 +796,20 @@ export class MembersService {
     return member;
   }
 
-  private async persistStatus(manager: EntityManager, member: Member, club: Club): Promise<string> {
-    const status = resolveMemberStatus({
+  private async persistStatus(
+    manager: EntityManager,
+    member: Member,
+    club: Club,
+    plans?: readonly MembershipTypeRow[],
+  ): Promise<string> {
+    const resolvedPlans = plans ?? (await this.membershipPlans(club.id, club));
+    const { rule, billingPeriod } = memberPlanContext(resolvedPlans, member, club);
+    const status = resolveMemberStatusForPlan({
       storedStatus: member.status,
-      membership: member.membership as 'tiro-deportivo' | 'caza',
+      rule,
+      billingPeriod,
       joinedOn: asDate(member.joinedOn),
       payments: activePayments(member),
-      calendar: calendarFromClub(club),
     });
     if (status !== member.status) {
       member.status = status;
@@ -816,6 +937,7 @@ export class MembersService {
     clubId: number,
     memberId: number,
     payloads: WeaponPayloadDto[],
+    actorUserId: number | null,
   ): Promise<void> {
     if (payloads.length > 10) {
       throw new BadRequestException('Un socio puede registrar hasta 10 armas.');
@@ -850,11 +972,20 @@ export class MembersService {
           sheetContent: null,
         });
         await applyWeaponSheet(this.files, created, payload.sheet, file);
-        await weapons.save(created);
+        const saved = await weapons.save(created);
+        await insertWeaponRegistryMovement(
+          manager,
+          snapshotFromWeapon(saved, 'alta', fields.registeredOn, actorUserId, saved.id),
+        );
       }
     }
     const removed = existing.filter((item) => !kept.has(item.id));
     for (const row of removed) {
+      const movementOn = new Date().toISOString().slice(0, 10);
+      await insertWeaponRegistryMovement(
+        manager,
+        snapshotFromWeapon(row, 'baja', movementOn, actorUserId, row.id),
+      );
       await removeStorageKey(this.files, row.sheetStorageKey);
     }
     if (removed.length > 0) {
@@ -933,6 +1064,7 @@ export class MembersService {
 }
 
 function weaponFields(payload: WeaponPayloadDto) {
+  assertWeaponAssignment(payload.modality, payload.platform, payload.caliber);
   return {
     brand: requiredText(payload.brand, 'La marca'),
     model: requiredText(payload.model, 'El modelo'),
@@ -1019,9 +1151,26 @@ function requiredText(value: string, label: string): string {
   return trimmed;
 }
 
+function memberPlanContext(
+  plans: readonly MembershipTypeRow[],
+  member: Member,
+  club: Club,
+): { plan: MembershipTypeRow | null; rule: ReturnType<typeof ruleFromPlan>; billingPeriod: MembershipBillingPeriod } {
+  const modality = member.modality as MembershipCode;
+  const calendar = calendarFromClub(club);
+  const plan = plans.find((row) => row.code === member.membership) ?? plans[0] ?? null;
+  const rule = plan
+    ? ruleFromPlan(plan)
+    : modality === 'caza'
+      ? calendar.hunting
+      : calendar.sportShooting;
+  const billingPeriod = plan?.billingPeriod ?? 'anual';
+  return { plan, rule, billingPeriod };
+}
+
 function paymentSlices(member: Member) {
   return (member.payments ?? []).map((payment) => ({
-    membership: payment.membership,
+    modality: payment.modality,
     paidOn: asDate(payment.paidOn),
     periodStart: asDate(payment.periodStart),
     reverted: payment.revertedAt != null,

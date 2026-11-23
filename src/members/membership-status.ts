@@ -14,7 +14,7 @@ export interface MembershipCalendar {
 }
 
 export interface PaymentSlice {
-  membership: string;
+  modality: string;
   paidOn: string;
   periodStart: string;
 }
@@ -24,12 +24,7 @@ export interface MembershipPeriod {
   end: string;
 }
 
-export function membershipPeriod(
-  membership: MembershipCode,
-  calendar: MembershipCalendar,
-  today = new Date(),
-): MembershipPeriod {
-  const rule = membership === 'caza' ? calendar.hunting : calendar.sportShooting;
+export function fiscalPeriodFromRule(rule: PeriodRule, today = new Date()): MembershipPeriod {
   const year = today.getFullYear();
   const month = today.getMonth() + 1;
   const day = today.getDate();
@@ -44,6 +39,15 @@ export function membershipPeriod(
   };
 }
 
+export function membershipPeriod(
+  membership: MembershipCode,
+  calendar: MembershipCalendar,
+  today = new Date(),
+): MembershipPeriod {
+  const rule = membership === 'caza' ? calendar.hunting : calendar.sportShooting;
+  return fiscalPeriodFromRule(rule, today);
+}
+
 export function periodCovered(
   payments: readonly PaymentSlice[],
   membership: MembershipCode,
@@ -52,7 +56,7 @@ export function periodCovered(
 ): boolean {
   const period = membershipPeriod(membership, calendar, today);
   return payments.some(
-    (payment) => payment.membership === membership && payment.periodStart === period.start,
+    (payment) => payment.modality === membership && payment.periodStart === period.start,
   );
 }
 
@@ -69,7 +73,7 @@ export function pendingPeriods(input: {
 }): MembershipPeriod[] {
   const today = input.today ?? new Date();
   const current = membershipPeriod(input.membership, input.calendar, today);
-  const own = input.payments.filter((payment) => payment.membership === input.membership);
+  const own = input.payments.filter((payment) => payment.modality === input.membership);
   const paid = new Set(own.filter((payment) => !payment.reverted).map((payment) => payment.periodStart));
   const firstPayment = own.map((payment) => payment.periodStart).sort()[0];
   const pending: MembershipPeriod[] = [];
@@ -141,17 +145,17 @@ export function firstPaymentDate(
   return isoDate(today.getFullYear(), today.getMonth() + 1, today.getDate());
 }
 
-function dateFromIso(iso: string): Date {
+export function dateFromIso(iso: string): Date {
   const [year, month, day] = iso.split('-').map(Number);
   return new Date(year, month - 1, day, 12);
 }
 
-function dayAfter(iso: string): Date {
+export function dayAfter(iso: string): Date {
   const date = dateFromIso(iso);
   date.setDate(date.getDate() + 1);
   return date;
 }
 
-function isoDate(year: number, month: number, day: number): string {
+export function isoDate(year: number, month: number, day: number): string {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }

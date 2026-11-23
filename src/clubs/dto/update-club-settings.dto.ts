@@ -3,6 +3,8 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
+  IsIn,
   IsInt,
   IsNumber,
   IsOptional,
@@ -49,6 +51,10 @@ export class RequiredDocumentDto {
   @MinLength(2)
   @MaxLength(120)
   label: string;
+
+  @IsOptional()
+  @IsIn(['na', '3m', '6m', '1y', '2y'])
+  validityCode?: 'na' | '3m' | '6m' | '1y' | '2y';
 }
 
 export class MembershipTypeDto {
@@ -63,29 +69,19 @@ export class MembershipTypeDto {
   @MaxLength(120)
   name: string;
 
-  @IsInt()
-  @Min(1)
-  @Max(12)
-  startMonth: number;
-
-  @IsInt()
-  @Min(1)
-  @Max(31)
-  startDay: number;
-
-  @IsInt()
-  @Min(1)
-  @Max(12)
-  endMonth: number;
-
-  @IsInt()
-  @Min(1)
-  @Max(31)
-  endDay: number;
-
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   feeMxn: number;
+
+  @IsBoolean()
+  allowsSportShooting: boolean;
+
+  @IsBoolean()
+  allowsHunting: boolean;
+
+  @IsOptional()
+  @IsIn(['mensual', 'semestral', 'anual'])
+  billingPeriod?: 'mensual' | 'semestral' | 'anual';
 }
 
 export class UpdateClubSettingsDto {

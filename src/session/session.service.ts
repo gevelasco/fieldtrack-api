@@ -141,15 +141,20 @@ export function mapSession(
   user: AppUser,
   club: Club,
   theme: ThemeScheme,
-  requiredDocuments: readonly { slot: string; label: string; createdAt?: string }[] = [],
+  requiredDocuments: readonly {
+    slot: string;
+    label: string;
+    validityCode?: string;
+    createdAt?: string;
+  }[] = [],
   membershipTypes: readonly {
     code: string;
     name: string;
-    startMonth: number;
-    startDay: number;
-    endMonth: number;
-    endDay: number;
     feeMxn: number;
+    billingPeriod?: string;
+    allowsSportShooting?: boolean;
+    allowsHunting?: boolean;
+    createdAt?: string;
   }[] = [],
   memberNumber: string | null = null,
 ) {
@@ -192,16 +197,16 @@ export function mapSession(
       requiredDocuments: requiredDocuments.map((row) => ({
         slot: row.slot,
         label: row.label,
+        validityCode: row.validityCode ?? 'na',
         ...(row.createdAt ? { createdAt: row.createdAt } : {}),
       })),
       membershipTypes: membershipTypes.map((row) => ({
         code: row.code,
         name: row.name,
-        startMonth: row.startMonth,
-        startDay: row.startDay,
-        endMonth: row.endMonth,
-        endDay: row.endDay,
         feeMxn: row.feeMxn,
+        billingPeriod: row.billingPeriod ?? 'anual',
+        allowsSportShooting: row.allowsSportShooting ?? true,
+        allowsHunting: row.allowsHunting ?? true,
       })),
     },
   };

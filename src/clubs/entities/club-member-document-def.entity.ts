@@ -26,6 +26,9 @@ export class ClubMemberDocumentDef {
   @Column({ name: 'effective_from_year', type: 'smallint', nullable: true })
   effectiveFromYear: number | null;
 
+  @Column({ name: 'validity_code', type: 'text', default: 'na' })
+  validityCode: string;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 }

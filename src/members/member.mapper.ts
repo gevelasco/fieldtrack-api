@@ -7,15 +7,24 @@ import { MemberDocument } from './entities/member-document.entity';
 import { MemberPeta } from './entities/member-peta.entity';
 import { MemberWeapon } from './entities/member-weapon.entity';
 import { MembershipPayment } from './entities/membership-payment.entity';
+import { feeForPlan } from '../clubs/membership-plans';
+import { MembershipTypeRow } from '../clubs/club-membership-types';
 import {
   MembershipCalendar,
   MembershipCode,
   membershipPeriod,
-  pendingPeriods,
   periodForStart,
   periodLabel,
-  resolveMemberStatus,
 } from './membership-status';
+import {
+  billingSliceForDate,
+  billingSliceForStart,
+  pendingBillingPeriods,
+  resolveMemberStatusForPlan,
+  ruleFromPlan,
+  type MembershipBillingPeriod,
+} from './membership-billing';
+import { type PeriodRule } from './membership-status';
 
 export const DOCUMENT_SLOTS = [
   'carta-antecedentes',
@@ -58,8 +67,18 @@ export function calendarFromClub(club: Club): MembershipCalendar {
   };
 }
 
-export function feeForMembership(club: Club, membership: string): number {
-  const raw = membership === 'caza' ? club.huntingFeeMxn : club.sportShootingFeeMxn;
+export function feeForMembership(
+  club: Club,
+  modality: string,
+  types?: readonly MembershipTypeRow[],
+  planCode?: string,
+): number {
+  if (types?.length && planCode) {
+    return feeForPlan(types, planCode, () =>
+      Number(modality === 'caza' ? club.huntingFeeMxn : club.sportShootingFeeMxn),
+    );
+  }
+  const raw = modality === 'caza' ? club.huntingFeeMxn : club.sportShootingFeeMxn;
   return Number(raw);
 }
 
@@ -74,36 +93,53 @@ export function mapMember(
     documentSlots: readonly string[];
     weaponIds?: readonly number[];
   }[] = [],
-  options: { includePetaHistory?: boolean } = {},
+  options: {
+    includePetaHistory?: boolean;
+    membershipTypes?: readonly MembershipTypeRow[];
+    /** Respuesta mínima para el listado del padrón (el detalle se carga aparte). */
+    forList?: boolean;
+  } = {},
 ) {
-  const includePetaHistory = options.includePetaHistory !== false;
-  const membership = member.membership as MembershipCode;
+  const forList = options.forList === true;
+  const includePetaHistory = forList ? false : options.includePetaHistory !== false;
+  const membershipTypes = options.membershipTypes ?? [];
+  const modality = member.modality as MembershipCode;
+  const plan =
+    membershipTypes.find((row) => row.code === member.membership) ??
+    membershipTypes[0] ??
+    null;
   const calendar = calendarFromClub(club);
-  const payments = (member.payments ?? []).map((row) => mapPayment(row, calendar));
-  const slices = payments.map((payment) => ({
-    membership: payment.membership,
-    paidOn: payment.paidOn,
-    periodStart: payment.periodStart,
-    reverted: payment.reverted !== null,
+  const rule = plan ? ruleFromPlan(plan) : modality === 'caza' ? calendar.hunting : calendar.sportShooting;
+  const billingPeriod = plan?.billingPeriod ?? 'anual';
+  const currentPeriod = billingSliceForDate(rule, billingPeriod);
+  let payments: ReturnType<typeof mapPayment>[] = [];
+  let pending: { start: string; end: string; amount: number }[] = [];
+  const statusSlices = (member.payments ?? []).map((row) => ({
+    modality: row.modality as MembershipCode,
+    paidOn: asDate(row.paidOn),
+    periodStart: asDate(row.periodStart),
+    reverted: row.revertedAt != null,
   }));
-  const currentPeriod = membershipPeriod(membership, calendar);
-  const status = resolveMemberStatus({
+  const status = resolveMemberStatusForPlan({
     storedStatus: member.status,
-    membership,
+    rule,
+    billingPeriod,
     joinedOn: asDate(member.joinedOn),
-    payments: slices.filter((slice) => !slice.reverted),
-    calendar,
+    payments: statusSlices.filter((slice) => !slice.reverted),
   });
-  const fee = feeForMembership(club, membership);
-  const pending = pendingPeriods({
-    membership,
-    joinedOn: asDate(member.joinedOn),
-    payments: slices,
-    calendar,
-  }).map((period) => ({
-    ...period,
-    amount: fee,
-  }));
+  if (!forList) {
+    payments = (member.payments ?? []).map((row) => mapPayment(row, rule, billingPeriod));
+    const fee = plan?.feeMxn ?? feeForMembership(club, modality, membershipTypes, member.membership);
+    pending = pendingBillingPeriods({
+      rule,
+      billingPeriod,
+      joinedOn: asDate(member.joinedOn),
+      payments: statusSlices,
+    }).map((period) => ({
+      ...period,
+      amount: fee,
+    }));
+  }
   return {
     id: member.id,
     clubId: member.clubId,
@@ -125,7 +161,9 @@ export function mapMember(
       : null,
     joinedOn: asDate(member.joinedOn),
     sex: member.sex,
-    membership,
+    modality,
+    membership: member.membership,
+    membershipName: plan?.name ?? member.membership,
     status,
     currentMembershipPeriod: {
       start: currentPeriod.start,
@@ -135,16 +173,20 @@ export function mapMember(
     weapons: (member.weapons ?? []).map((weapon) =>
       mapWeapon(weapon, member.petas ? { petas: member.petas, calendar } : undefined),
     ),
-    petas: sortPetas(member.petas ?? [])
-      .filter((peta) => includePetaHistory || peta.isCurrent !== false)
-      .map((peta) => mapPeta(peta, calendar)),
-    documents: (member.documents ?? []).map(mapDocument),
-    payments,
-    pendingPeriods: pending,
-    huntingTags: (member.huntingTags ?? []).map(mapMemberTag),
-    competitionFees: (member.competitionRegistrations ?? [])
-      .filter(isChargedCompetitionFee)
-      .map(mapMemberCompetitionFee),
+    petas: forList
+      ? []
+      : sortPetas(member.petas ?? [])
+          .filter((peta) => includePetaHistory || peta.isCurrent !== false)
+          .map((peta) => mapPeta(peta, calendar)),
+    documents: forList ? [] : (member.documents ?? []).map(mapDocument),
+    payments: forList ? [] : payments,
+    pendingPeriods: forList ? [] : pending,
+    huntingTags: forList ? [] : (member.huntingTags ?? []).map(mapMemberTag),
+    competitionFees: forList
+      ? []
+      : (member.competitionRegistrations ?? [])
+          .filter(isChargedCompetitionFee)
+          .map(mapMemberCompetitionFee),
     permits: [],
     requests: openRequests,
   };
@@ -254,15 +296,19 @@ export function mapPeta(peta: MemberPeta, calendar: MembershipCalendar) {
   };
 }
 
-export function mapPayment(payment: MembershipPayment, calendar: MembershipCalendar) {
+export function mapPayment(
+  payment: MembershipPayment,
+  rule: PeriodRule,
+  billingPeriod: MembershipBillingPeriod,
+) {
   const recorder = payment.recordedBy;
-  const membership = payment.membership as MembershipCode;
+  const modality = payment.modality as MembershipCode;
   const periodStart = asDate(payment.periodStart);
-  const period = periodForStart(membership, calendar, periodStart);
+  const period = billingSliceForStart(rule, billingPeriod, periodStart);
   return {
     id: payment.id,
     clubId: payment.clubId,
-    membership,
+    modality,
     paidOn: asDate(payment.paidOn),
     periodStart,
     periodEnd: period.end,

@@ -1,6 +1,8 @@
 import { EntityManager, FindOptionsRelations, In, Repository } from 'typeorm';
 import { normalizeSearchTerm, escapeLikePattern } from '../common/text-search';
 import { Member } from './entities/member.entity';
+import { MemberPeta } from './entities/member-peta.entity';
+import { MembershipPayment } from './entities/membership-payment.entity';
 import { type MembershipCode, type MembershipPeriod } from './membership-status';
 
 /** Qué relaciones cargar según el caso de uso (consultas separadas, sin JOIN cartesiano). */
@@ -9,8 +11,6 @@ export type MemberLoadProfile = 'list' | 'portal' | 'detail';
 const RELATIONS_BY_PROFILE: Record<MemberLoadProfile, FindOptionsRelations<Member>> = {
   list: {
     weapons: true,
-    petas: true,
-    payments: { recordedBy: true, revertedBy: true },
   },
   portal: {
     weapons: true,
@@ -29,7 +29,7 @@ const RELATIONS_BY_PROFILE: Record<MemberLoadProfile, FindOptionsRelations<Membe
 
 export interface MemberSearch {
   clubId: number;
-  membership?: string;
+  modality?: string;
   terms: readonly string[];
   page: number;
   pageSize: number;
@@ -39,8 +39,10 @@ export interface MemberSearch {
 export interface MemberOrder {
   sort: 'requests' | 'status' | 'seniority';
   direction: 'asc' | 'desc';
-  /** El estatus depende del periodo en curso de cada membresía, que cambia con la fecha. */
+  /** Calendarios por modalidad (PETAs y armas). */
   periods: Record<MembershipCode, MembershipPeriod>;
+  /** Inicio del tramo de cobro vigente por código de plan de membresía. */
+  billingPeriodStarts: Record<string, string>;
 }
 
 /** Misma normalización que las columnas `search_text`: minúsculas y sin acentos. */
@@ -63,9 +65,9 @@ export async function searchMemberIds(
 ): Promise<{ ids: number[]; total: number; page: number }> {
   const params: unknown[] = [search.clubId];
   const where = ['m.club_id = $1'];
-  if (search.membership) {
-    params.push(search.membership);
-    where.push(`m.membership = $${params.length}`);
+  if (search.modality) {
+    params.push(search.modality);
+    where.push(`m.modality = $${params.length}`);
   }
   if (search.terms.length > 0) {
     const patterns = search.terms.map((term) => {
@@ -115,7 +117,7 @@ function orderTerms(order: MemberOrder | undefined, params: unknown[]): string[]
       // Ascendente = menor antigüedad primero, es decir, ingreso más reciente.
       return [`m.joined_on ${direction === 'ASC' ? 'DESC' : 'ASC'}`];
     case 'status':
-      return [`${statusRank(order.periods, params)} ${direction}`];
+      return [`${statusRank(order.periods, order.billingPeriodStarts, params)} ${direction}`];
     case 'requests':
       return [
         `(SELECT count(*) FROM fieldtrack.club_requests r
@@ -124,19 +126,29 @@ function orderTerms(order: MemberOrder | undefined, params: unknown[]): string[]
   }
 }
 
-/** Misma regla que `resolveMemberStatus`: 0 vigente, 1 pendiente, 2 vetado. */
-function statusRank(periods: Record<MembershipCode, MembershipPeriod>, params: unknown[]): string {
+/** Misma regla que `resolveMemberStatusForPlan`: 0 vigente, 1 pendiente, 2 vetado. */
+function statusRank(
+  periods: Record<MembershipCode, MembershipPeriod>,
+  billingPeriodStarts: Record<string, string>,
+  params: unknown[],
+): string {
+  const entries = Object.entries(billingPeriodStarts);
   const param = (value: string) => {
     params.push(value);
     return `$${params.length}::date`;
   };
-  const start = `CASE m.membership WHEN 'caza' THEN ${param(periods.caza.start)} ELSE ${param(periods['tiro-deportivo'].start)} END`;
+  const periodStart =
+    entries.length > 0
+      ? `CASE m.membership ${entries
+          .map(([code, start]) => `WHEN '${code.replace(/'/g, "''")}' THEN ${param(start)}`)
+          .join(' ')} ELSE ${param(periods['tiro-deportivo'].start)} END`
+      : param(periods['tiro-deportivo'].start);
   return `(CASE
     WHEN m.status = 'vetado' THEN 2
     WHEN EXISTS (
       SELECT 1 FROM fieldtrack.membership_payments p
       WHERE p.member_id = m.id AND p.reverted_at IS NULL
-        AND p.membership = m.membership AND p.period_start = ${start}
+        AND p.period_start = ${periodStart}
     ) THEN 0
     ELSE 1
   END)`;
@@ -164,7 +176,9 @@ export async function membersByIds(
       return [];
     }
     row.weapons?.sort((a, b) => String(a.registeredOn).localeCompare(String(b.registeredOn)));
-    row.payments?.sort((a, b) => String(b.paidOn).localeCompare(String(a.paidOn)));
+    if (profile !== 'list') {
+      row.payments?.sort((a, b) => String(b.paidOn).localeCompare(String(a.paidOn)));
+    }
     row.huntingTags?.sort((a, b) => String(b.paidOn).localeCompare(String(a.paidOn)) || b.id - a.id);
     row.competitionRegistrations?.sort(
       (a, b) => String(b.confirmedAt ?? '').localeCompare(String(a.confirmedAt ?? '')) || b.id - a.id,
@@ -196,8 +210,13 @@ const WEAPON_PETA_ACTIVE_SQL = `(w.has_peta
 export async function memberSummary(
   manager: EntityManager,
   clubId: number,
-  periods: Record<MembershipCode, MembershipPeriod>,
+  input: Record<MembershipCode, MembershipPeriod> & { billingPeriodStarts?: Record<string, string> },
 ) {
+  const periods: Record<MembershipCode, MembershipPeriod> = {
+    'tiro-deportivo': input['tiro-deportivo'],
+    caza: input.caza,
+  };
+  const billingPeriodStarts = input.billingPeriodStarts ?? {};
   const [members]: Array<{ total: number; sport: number; hunting: number }> = await manager.query(
     `SELECT count(*)::int AS total,
             count(*) FILTER (WHERE membership = 'tiro-deportivo')::int AS sport,
@@ -225,7 +244,7 @@ export async function memberSummary(
     [clubId, periods.caza.start, periods['tiro-deportivo'].start],
   );
   const statusParams: unknown[] = [clubId];
-  const statusCase = statusRank(periods, statusParams);
+  const statusCase = statusRank(periods, billingPeriodStarts, statusParams);
   const [status]: Array<{ vigente: number; pendiente: number; vetado: number }> = await manager.query(
     `SELECT count(*) FILTER (WHERE (${statusCase}) = 0)::int AS vigente,
             count(*) FILTER (WHERE (${statusCase}) = 1)::int AS pendiente,
@@ -242,7 +261,7 @@ export async function memberSummary(
       caceria: weapons?.hunting_permits ?? 0,
       'tiro-deportivo': weapons?.sport_permits ?? 0,
     },
-    byMembership: {
+    byModality: {
       'tiro-deportivo': members?.sport ?? 0,
       caza: members?.hunting ?? 0,
     },
@@ -264,6 +283,67 @@ export async function memberNumbers(manager: EntityManager, clubId: number): Pro
 
 function escapeLike(value: string): string {
   return escapeLikePattern(value);
+}
+
+/** Pagos vigentes y PETAs actuales para el listado (evita cargar historial por socio). */
+export async function attachListMemberExtras(
+  manager: EntityManager,
+  clubId: number,
+  members: Member[],
+): Promise<void> {
+  if (members.length === 0) {
+    return;
+  }
+  const ids = members.map((row) => row.id);
+  const [paymentRows, petaRows]: [
+    Array<{ member_id: number; modality: string; paid_on: string; period_start: string }>,
+    Array<{ member_id: number; id: number; permit_type: string; loaded_on: string; is_current: boolean }>,
+  ] = await Promise.all([
+    manager.query(
+      `SELECT member_id, modality, paid_on::text AS paid_on, period_start::text AS period_start
+       FROM fieldtrack.membership_payments
+       WHERE club_id = $1 AND member_id = ANY($2::int[]) AND reverted_at IS NULL`,
+      [clubId, ids],
+    ),
+    manager.query(
+      `SELECT member_id, id, permit_type, loaded_on::text AS loaded_on, is_current
+       FROM fieldtrack.member_petas
+       WHERE club_id = $1 AND member_id = ANY($2::int[]) AND is_current = true`,
+      [clubId, ids],
+    ),
+  ]);
+  const paymentsByMember = new Map<number, MembershipPayment[]>();
+  for (const row of paymentRows) {
+    const memberId = Number(row.member_id);
+    const list = paymentsByMember.get(memberId) ?? [];
+    list.push({
+      memberId,
+      clubId,
+      modality: row.modality,
+      paidOn: row.paid_on,
+      periodStart: row.period_start,
+      revertedAt: null,
+    } as MembershipPayment);
+    paymentsByMember.set(memberId, list);
+  }
+  const petasByMember = new Map<number, MemberPeta[]>();
+  for (const row of petaRows) {
+    const memberId = Number(row.member_id);
+    const list = petasByMember.get(memberId) ?? [];
+    list.push({
+      id: Number(row.id),
+      memberId,
+      clubId,
+      permitType: row.permit_type,
+      loadedOn: row.loaded_on,
+      isCurrent: row.is_current !== false,
+    } as MemberPeta);
+    petasByMember.set(memberId, list);
+  }
+  for (const member of members) {
+    member.payments = paymentsByMember.get(member.id) ?? [];
+    member.petas = petasByMember.get(member.id) ?? [];
+  }
 }
 
 export async function loadMemberById(

@@ -103,11 +103,10 @@ export class ClubSettingsService {
           const prev = byCode.get(row.code);
           if (prev) {
             prev.name = row.name;
-            prev.startMonth = row.startMonth;
-            prev.startDay = row.startDay;
-            prev.endMonth = row.endMonth;
-            prev.endDay = row.endDay;
             prev.feeMxn = String(row.feeMxn);
+            prev.billingPeriod = row.billingPeriod;
+            prev.allowsSportShooting = row.allowsSportShooting;
+            prev.allowsHunting = row.allowsHunting;
             prev.sortOrder = index;
             await repo.save(prev);
           } else {
@@ -116,11 +115,14 @@ export class ClubSettingsService {
                 clubId,
                 code: row.code,
                 name: row.name,
-                startMonth: row.startMonth,
-                startDay: row.startDay,
-                endMonth: row.endMonth,
-                endDay: row.endDay,
+                startMonth: club.sportShootingStartMonth,
+                startDay: club.sportShootingStartDay,
+                endMonth: club.sportShootingEndMonth,
+                endDay: club.sportShootingEndDay,
                 feeMxn: String(row.feeMxn),
+                billingPeriod: row.billingPeriod,
+                allowsSportShooting: row.allowsSportShooting,
+                allowsHunting: row.allowsHunting,
                 sortOrder: index,
               }),
             );
@@ -167,9 +169,11 @@ export class ClubSettingsService {
           const label = row.label.trim();
           keepSlots.add(slot);
           const prev = bySlot.get(slot);
+          const validityCode = row.validityCode?.trim() || 'na';
           if (prev) {
             prev.label = label;
             prev.sortOrder = index;
+            prev.validityCode = validityCode;
             await defs.save(prev);
           } else {
             await defs.save(
@@ -179,6 +183,7 @@ export class ClubSettingsService {
                 label,
                 sortOrder: index,
                 effectiveFromYear: null,
+                validityCode,
               }),
             );
           }
@@ -218,8 +223,6 @@ export function mapSettings(
   defs: Awaited<ReturnType<typeof loadClubDocumentDefs>>,
   types: MembershipTypeRow[],
 ) {
-  const sport = types.find((row) => row.code === 'tiro-deportivo');
-  const hunting = types.find((row) => row.code === 'caza');
   return {
     id: club.id,
     name: club.name,
@@ -230,30 +233,30 @@ export function mapSettings(
     membershipTypes: types.map((row) => ({
       code: row.code,
       name: row.name,
-      startMonth: row.startMonth,
-      startDay: row.startDay,
-      endMonth: row.endMonth,
-      endDay: row.endDay,
       feeMxn: row.feeMxn,
+      billingPeriod: row.billingPeriod,
+      allowsSportShooting: row.allowsSportShooting,
+      allowsHunting: row.allowsHunting,
       createdAt: row.createdAt.toISOString(),
     })),
-    sportShootingFeeMxn: sport?.feeMxn ?? Number(club.sportShootingFeeMxn),
-    huntingFeeMxn: hunting?.feeMxn ?? Number(club.huntingFeeMxn),
+    sportShootingFeeMxn: Number(club.sportShootingFeeMxn),
+    huntingFeeMxn: Number(club.huntingFeeMxn),
     sportShooting: {
-      startMonth: sport?.startMonth ?? club.sportShootingStartMonth,
-      startDay: sport?.startDay ?? club.sportShootingStartDay,
-      endMonth: sport?.endMonth ?? club.sportShootingEndMonth,
-      endDay: sport?.endDay ?? club.sportShootingEndDay,
+      startMonth: club.sportShootingStartMonth,
+      startDay: club.sportShootingStartDay,
+      endMonth: club.sportShootingEndMonth,
+      endDay: club.sportShootingEndDay,
     },
     hunting: {
-      startMonth: hunting?.startMonth ?? club.huntingStartMonth,
-      startDay: hunting?.startDay ?? club.huntingStartDay,
-      endMonth: hunting?.endMonth ?? club.huntingEndMonth,
-      endDay: hunting?.endDay ?? club.huntingEndDay,
+      startMonth: club.huntingStartMonth,
+      startDay: club.huntingStartDay,
+      endMonth: club.huntingEndMonth,
+      endDay: club.huntingEndDay,
     },
     requiredDocuments: defs.map((row) => ({
       slot: row.slot,
       label: row.label,
+      validityCode: row.validityCode,
       createdAt: row.createdAt.toISOString(),
     })),
   };
@@ -263,21 +266,21 @@ function normalizeMembershipTypes(
   rows: readonly {
     code?: string;
     name: string;
-    startMonth: number;
-    startDay: number;
-    endMonth: number;
-    endDay: number;
     feeMxn: number;
+    billingPeriod?: 'mensual' | 'semestral' | 'anual';
+    allowsSportShooting: boolean;
+    allowsHunting: boolean;
   }[],
 ): MembershipTypePatchRow[] {
   const usedCodes = new Set<string>();
   return rows.map((row, index) => {
     const name = row.name.trim();
     if (name.length < 2) {
-      throw new BadRequestException('Escribe el nombre de la modalidad.');
+      throw new BadRequestException('Escribe el nombre del plan de membresía.');
     }
-    assertDay(row.startMonth, row.startDay);
-    assertDay(row.endMonth, row.endDay);
+    if (!row.allowsSportShooting && !row.allowsHunting) {
+      throw new BadRequestException(`«${name}» debe aplicar al menos a tiro deportivo o cacería.`);
+    }
     let code = row.code?.trim() || slugify(name);
     if (!code) {
       code = `membresia-${index + 1}`;
@@ -292,11 +295,14 @@ function normalizeMembershipTypes(
     return {
       code: unique,
       name,
-      startMonth: row.startMonth,
-      startDay: row.startDay,
-      endMonth: row.endMonth,
-      endDay: row.endDay,
+      startMonth: 1,
+      startDay: 1,
+      endMonth: 12,
+      endDay: 31,
       feeMxn: row.feeMxn,
+      billingPeriod: row.billingPeriod ?? 'anual',
+      allowsSportShooting: row.allowsSportShooting,
+      allowsHunting: row.allowsHunting,
       sortOrder: index,
     };
   });

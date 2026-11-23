@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { parseColumnMappingJson } from '../members/members-import-catalog';
 import { MembersImportService } from '../members/members-import.service';
 import { SessionService } from '../session/session.service';
 import { CreateClubStaffDto, UpdateClubStaffDto } from './dto/create-club-staff.dto';
@@ -113,10 +114,39 @@ export class ClubSettingsController {
     });
   }
 
+  @Post('import/members/preview')
+  @ApiOperation({ summary: 'Vista previa y mapeo sugerido de columnas para importar padrón' })
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 15 * 1024 * 1024 } }))
+  async previewMembersImport(
+    @UploadedFile() file?: { buffer: Buffer },
+    @Body('sheetName') sheetName?: string,
+    @Body('headerRowIndex') headerRowIndex?: string,
+    @Body('columnMapping') columnMappingJson?: string,
+  ) {
+    const actor = await this.session.current();
+    requireStaffModule(
+      actor.user.role,
+      normalizeStaffModulePermissions(actor.user.modulePermissions),
+      'configuracion',
+      'view',
+    );
+    const headerIndex = headerRowIndex !== undefined && headerRowIndex !== '' ? Number(headerRowIndex) : undefined;
+    return this.memberImport.previewMembersFile(file?.buffer ?? Buffer.alloc(0), {
+      sheetName: sheetName?.trim() || undefined,
+      headerRowIndex: Number.isFinite(headerIndex) ? headerIndex : undefined,
+      columnMapping: parseColumnMappingJson(columnMappingJson),
+    });
+  }
+
   @Post('import/members')
   @ApiOperation({ summary: 'Importar socios desde Excel' })
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 15 * 1024 * 1024 } }))
-  async importMembers(@UploadedFile() file?: { buffer: Buffer }) {
+  async importMembers(
+    @UploadedFile() file?: { buffer: Buffer },
+    @Body('sheetName') sheetName?: string,
+    @Body('headerRowIndex') headerRowIndex?: string,
+    @Body('columnMapping') columnMappingJson?: string,
+  ) {
     const actor = await this.session.current();
     requireStaffModule(
       actor.user.role,
@@ -124,7 +154,12 @@ export class ClubSettingsController {
       'configuracion',
       'write',
     );
-    return this.memberImport.importMembersFile(actor.club.id, actor.user, file?.buffer ?? Buffer.alloc(0));
+    const headerIndex = headerRowIndex !== undefined && headerRowIndex !== '' ? Number(headerRowIndex) : undefined;
+    return this.memberImport.importMembersFile(actor.club.id, actor.user, file?.buffer ?? Buffer.alloc(0), {
+      sheetName: sheetName?.trim() || undefined,
+      headerRowIndex: Number.isFinite(headerIndex) ? headerIndex : undefined,
+      columnMapping: parseColumnMappingJson(columnMappingJson),
+    });
   }
 
   @Post('import/weapons')
