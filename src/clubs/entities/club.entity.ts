@@ -51,6 +51,12 @@ export class Club {
   })
   huntingFeeMxn: string;
 
+  @Column({ name: 'sport_shooting_modality_label', type: 'text', default: 'Tiro deportivo' })
+  sportShootingModalityLabel: string;
+
+  @Column({ name: 'hunting_modality_label', type: 'text', default: 'Cacería' })
+  huntingModalityLabel: string;
+
   @Column({ name: 'sport_shooting_start_month', type: 'smallint', default: 1 })
   sportShootingStartMonth: number;
 
@@ -74,6 +80,15 @@ export class Club {
 
   @Column({ name: 'hunting_end_day', type: 'smallint', default: 31 })
   huntingEndDay: number;
+
+  /** Cobros DPA por formato PDF (ventanilla). */
+  @Column({ name: 'official_form_fees', type: 'jsonb', nullable: true })
+  officialFormFees: Array<{
+    formId: string;
+    importeMxn: number;
+    cantidadPagarMxn: number;
+    totalPagarMxn: number;
+  }> | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

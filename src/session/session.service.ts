@@ -157,6 +157,12 @@ export function mapSession(
     createdAt?: string;
   }[] = [],
   memberNumber: string | null = null,
+  officialFormFees: readonly {
+    formId: string;
+    importeMxn: number;
+    cantidadPagarMxn: number;
+    totalPagarMxn: number;
+  }[] = [],
 ) {
   return {
     user: {
@@ -183,12 +189,14 @@ export function mapSession(
       sportShootingFeeMxn: Number(club.sportShootingFeeMxn),
       huntingFeeMxn: Number(club.huntingFeeMxn),
       sportShooting: {
+        name: club.sportShootingModalityLabel,
         startMonth: club.sportShootingStartMonth,
         startDay: club.sportShootingStartDay,
         endMonth: club.sportShootingEndMonth,
         endDay: club.sportShootingEndDay,
       },
       hunting: {
+        name: club.huntingModalityLabel,
         startMonth: club.huntingStartMonth,
         startDay: club.huntingStartDay,
         endMonth: club.huntingEndMonth,
@@ -207,6 +215,12 @@ export function mapSession(
         billingPeriod: row.billingPeriod ?? 'anual',
         allowsSportShooting: row.allowsSportShooting ?? true,
         allowsHunting: row.allowsHunting ?? true,
+      })),
+      officialFormFees: officialFormFees.map((row) => ({
+        formId: row.formId,
+        importeMxn: row.importeMxn,
+        cantidadPagarMxn: row.cantidadPagarMxn,
+        totalPagarMxn: row.totalPagarMxn,
       })),
     },
   };

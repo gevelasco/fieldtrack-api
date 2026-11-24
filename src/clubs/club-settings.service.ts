@@ -20,6 +20,7 @@ import { ClubMembershipType } from './entities/club-membership-type.entity';
 import { ClubStaffService } from './club-staff.service';
 import { Club } from './entities/club.entity';
 import { normalizeMemberNumberPrefix } from './member-number';
+import { normalizeOfficialFormFees } from './club-official-form-fees';
 import { normalizeStaffModulePermissions, requireStaffModule } from './staff-module-permissions';
 
 @Injectable()
@@ -148,6 +149,17 @@ export class ClubSettingsService {
         }
       }
 
+      if (dto.officialFormFees !== undefined) {
+        const seen = new Set<string>();
+        for (const row of dto.officialFormFees) {
+          if (seen.has(row.formId)) {
+            throw new BadRequestException(`El formato «${row.formId}» está repetido en cobros.`);
+          }
+          seen.add(row.formId);
+        }
+        club.officialFormFees = normalizeOfficialFormFees(dto.officialFormFees);
+      }
+
       await clubs.save(club);
 
       if (dto.requiredDocuments) {
@@ -242,12 +254,14 @@ export function mapSettings(
     sportShootingFeeMxn: Number(club.sportShootingFeeMxn),
     huntingFeeMxn: Number(club.huntingFeeMxn),
     sportShooting: {
+      name: club.sportShootingModalityLabel,
       startMonth: club.sportShootingStartMonth,
       startDay: club.sportShootingStartDay,
       endMonth: club.sportShootingEndMonth,
       endDay: club.sportShootingEndDay,
     },
     hunting: {
+      name: club.huntingModalityLabel,
       startMonth: club.huntingStartMonth,
       startDay: club.huntingStartDay,
       endMonth: club.huntingEndMonth,
@@ -259,6 +273,7 @@ export function mapSettings(
       validityCode: row.validityCode,
       createdAt: row.createdAt.toISOString(),
     })),
+    officialFormFees: normalizeOfficialFormFees(club.officialFormFees),
   };
 }
 
@@ -321,16 +336,23 @@ function slugify(value: string): string {
 function applyWindow(
   club: Club,
   kind: 'sportShooting' | 'hunting',
-  window: { startMonth: number; startDay: number; endMonth: number; endDay: number },
+  window: { name?: string; startMonth: number; startDay: number; endMonth: number; endDay: number },
 ) {
   assertDay(window.startMonth, window.startDay);
   assertDay(window.endMonth, window.endDay);
+  const label = window.name?.trim();
   if (kind === 'sportShooting') {
+    if (label && label.length >= 2) {
+      club.sportShootingModalityLabel = label;
+    }
     club.sportShootingStartMonth = window.startMonth;
     club.sportShootingStartDay = window.startDay;
     club.sportShootingEndMonth = window.endMonth;
     club.sportShootingEndDay = window.endDay;
   } else {
+    if (label && label.length >= 2) {
+      club.huntingModalityLabel = label;
+    }
     club.huntingStartMonth = window.startMonth;
     club.huntingStartDay = window.startDay;
     club.huntingEndMonth = window.endMonth;

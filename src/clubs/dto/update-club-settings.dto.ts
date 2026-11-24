@@ -20,6 +20,12 @@ import {
 const SLOT = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export class MembershipWindowDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(120)
+  name?: string;
+
   @IsInt()
   @Min(1)
   @Max(12)
@@ -55,6 +61,35 @@ export class RequiredDocumentDto {
   @IsOptional()
   @IsIn(['na', '3m', '6m', '1y', '2y'])
   validityCode?: 'na' | '3m' | '6m' | '1y' | '2y';
+}
+
+export class OfficialFormFeeDto {
+  @IsString()
+  @IsIn([
+    'autorizacion-compra-arma-h6',
+    'baja-extravio-robo-h6',
+    'cambio-datos-h5',
+    'baja-arma-diferentes-motivos-h3',
+    'arma-adicional',
+  ])
+  formId:
+    | 'autorizacion-compra-arma-h6'
+    | 'baja-extravio-robo-h6'
+    | 'cambio-datos-h5'
+    | 'baja-arma-diferentes-motivos-h3'
+    | 'arma-adicional';
+
+  @IsInt()
+  @Min(0)
+  importeMxn: number;
+
+  @IsInt()
+  @Min(0)
+  cantidadPagarMxn: number;
+
+  @IsInt()
+  @Min(0)
+  totalPagarMxn: number;
 }
 
 export class MembershipTypeDto {
@@ -140,4 +175,12 @@ export class UpdateClubSettingsDto {
   @ValidateNested({ each: true })
   @Type(() => MembershipTypeDto)
   membershipTypes?: MembershipTypeDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(12)
+  @ValidateNested({ each: true })
+  @Type(() => OfficialFormFeeDto)
+  officialFormFees?: OfficialFormFeeDto[];
 }

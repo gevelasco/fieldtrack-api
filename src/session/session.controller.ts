@@ -26,6 +26,7 @@ export class SessionController {
       settings.requiredDocuments,
       settings.membershipTypes,
       actor.memberNumber,
+      settings.officialFormFees,
     );
   }
 
@@ -43,6 +44,7 @@ export class SessionController {
       settings.requiredDocuments,
       settings.membershipTypes,
       actor.memberNumber,
+      settings.officialFormFees,
     );
   }
 

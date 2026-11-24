@@ -219,8 +219,8 @@ export async function memberSummary(
   const billingPeriodStarts = input.billingPeriodStarts ?? {};
   const [members]: Array<{ total: number; sport: number; hunting: number }> = await manager.query(
     `SELECT count(*)::int AS total,
-            count(*) FILTER (WHERE membership = 'tiro-deportivo')::int AS sport,
-            count(*) FILTER (WHERE membership = 'caza')::int AS hunting
+            count(*) FILTER (WHERE modality = 'tiro-deportivo')::int AS sport,
+            count(*) FILTER (WHERE modality = 'caza')::int AS hunting
      FROM fieldtrack.members WHERE club_id = $1`,
     [clubId],
   );
