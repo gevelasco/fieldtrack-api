@@ -164,7 +164,7 @@ export function buildArmasImportTemplateBuffer(): Buffer {
     'Obligatorio',
     'Obligatorio (único en el club)',
     'Opcional (vacío = otro)',
-    'Opcional (vacío = tiro-deportivo)',
+    'Opcional (vacío = modalidad del socio)',
     'Opcional (vacío = no)',
     'Opcional (vacío = hoy, aaaa-mm-dd)',
   ];
@@ -498,8 +498,16 @@ export function resolveImportWeaponPlatform(parts: {
   return 'otro';
 }
 
-export function parseWeaponModalityInput(raw: string): WeaponPayloadDto['modality'] {
-  const value = normalizeKey(raw).replace(/_/g, '-');
+/**
+ * Parsea la modalidad del arma. Vacío → `null` (el caller aplica la del socio).
+ * Texto no reconocido → `null` para no forzar tiro si el socio es de cacería.
+ */
+export function parseWeaponModalityInput(raw: string): WeaponPayloadDto['modality'] | null {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const value = normalizeKey(trimmed).replace(/_/g, '-');
   if (WEAPON_MODALITIES.has(value)) {
     return value as WeaponPayloadDto['modality'];
   }
@@ -509,7 +517,36 @@ export function parseWeaponModalityInput(raw: string): WeaponPayloadDto['modalit
   if (value.includes('tiro')) {
     return 'tiro-deportivo';
   }
+  if (value.includes('domicilio')) {
+    return 'proteccion-domicilio';
+  }
+  if (value.includes('parcela')) {
+    return 'proteccion-parcela';
+  }
+  return null;
+}
+
+/** Modalidad de arma a partir de la modalidad de membresía del socio (`caza` → `caceria`). */
+export function weaponModalityFromMemberModality(
+  memberModality: string | null | undefined,
+): WeaponPayloadDto['modality'] {
+  const key = normalizeKey(memberModality ?? '').replace(/_/g, '-');
+  if (key === 'caza' || key.includes('cacer')) {
+    return 'caceria';
+  }
+  if (key === 'tiro-deportivo' || key.includes('tiro')) {
+    return 'tiro-deportivo';
+  }
+  // Sin modalidad de socio: primera por defecto.
   return 'tiro-deportivo';
+}
+
+/** Modalidad del arma: columna del Excel, o la del socio, o tiro deportivo. */
+export function resolveImportWeaponModality(
+  raw: string,
+  memberModality?: string | null,
+): WeaponPayloadDto['modality'] {
+  return parseWeaponModalityInput(raw) ?? weaponModalityFromMemberModality(memberModality);
 }
 
 export function parseBoolInput(raw: string): boolean {

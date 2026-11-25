@@ -23,7 +23,7 @@ import {
   parseMembersImportFile,
   resolveImportWeaponPlatform,
   parseSexInput,
-  parseWeaponModalityInput,
+  resolveImportWeaponModality,
   parseWeaponsImportFile,
   resolveMembershipCode,
 } from './members-import.parser';
@@ -43,6 +43,8 @@ export interface WeaponImportResult {
   failed: number;
   errors: string[];
 }
+
+type MemberImportRef = { id: number; modality: string };
 
 @Injectable()
 export class MembersImportService {
@@ -89,7 +91,11 @@ export class MembersImportService {
     }
 
     const existingNumbers = await this.loadMemberNumberLookupKeys(clubId, club.memberNumberPrefix);
-    const memberByNumber = await this.loadMemberIds(clubId);
+    const memberByNumber = await this.loadMemberRefs(clubId);
+    const modalityByMemberId = new Map<number, string>();
+    for (const ref of memberByNumber.values()) {
+      modalityByMemberId.set(ref.id, ref.modality);
+    }
     const existingSerials = await this.loadClubSerials(clubId);
     const weaponCountByMember = await this.loadWeaponCounts(clubId);
     const seenInFile = new Map<string, number>();
@@ -108,18 +114,24 @@ export class MembersImportService {
         continue;
       }
       const importKeys = memberNumberLookupKeys(club.memberNumberPrefix, row.memberNumber);
-      const weapons = mapInlineWeaponsToPayloads(row.inlineWeapons, today, row.sheetRow, errors);
 
-      const existingMemberId =
-        findMemberIdInMap(memberByNumber, club.memberNumberPrefix, row.memberNumber) ??
+      const existingRef =
+        findMemberRefInMap(memberByNumber, club.memberNumberPrefix, row.memberNumber) ??
         (importKeys.some((key) => existingNumbers.has(key))
           ? memberByNumber.get(normalizeMemberKey(formattedNumber))
           : undefined);
 
-      if (existingMemberId != null) {
+      if (existingRef != null) {
+        const weapons = mapInlineWeaponsToPayloads(
+          row.inlineWeapons,
+          today,
+          row.sheetRow,
+          errors,
+          existingRef.modality,
+        );
         const appended = await this.appendMissingWeaponsForMember(
           clubId,
-          existingMemberId,
+          existingRef.id,
           formattedNumber,
           row.sheetRow,
           weapons,
@@ -142,6 +154,13 @@ export class MembersImportService {
 
       const seenMemberId = seenInFile.get(formattedNumber);
       if (seenMemberId != null) {
+        const weapons = mapInlineWeaponsToPayloads(
+          row.inlineWeapons,
+          today,
+          row.sheetRow,
+          errors,
+          modalityByMemberId.get(seenMemberId),
+        );
         const appended = await this.appendMissingWeaponsForMember(
           clubId,
           seenMemberId,
@@ -170,6 +189,13 @@ export class MembersImportService {
         );
         continue;
       }
+      const weapons = mapInlineWeaponsToPayloads(
+        row.inlineWeapons,
+        today,
+        row.sheetRow,
+        errors,
+        resolved.modality,
+      );
       const joinedOn = parseIsoDateInput(row.joinedOnRaw, today);
       const dto: CreateMemberDto = {
         memberNumber: row.memberNumber,
@@ -193,7 +219,11 @@ export class MembersImportService {
         const memberId = Number((createdMember as { id?: number }).id);
         if (Number.isFinite(memberId) && memberId > 0) {
           seenInFile.set(formattedNumber, memberId);
-          memberByNumber.set(normalizeMemberKey(formattedNumber), memberId);
+          modalityByMemberId.set(memberId, resolved.modality);
+          memberByNumber.set(normalizeMemberKey(formattedNumber), {
+            id: memberId,
+            modality: resolved.modality,
+          });
           weaponCountByMember.set(memberId, weapons.length);
           for (const weapon of weapons) {
             const serial = normalizeWeaponSerial(weapon.serialNumber ?? '');
@@ -240,7 +270,7 @@ export class MembersImportService {
       throw new BadRequestException('No hay filas de armas para importar.');
     }
 
-    const memberByNumber = await this.loadMemberIds(clubId);
+    const memberByNumber = await this.loadMemberRefs(clubId);
     const existingSerials = await this.loadClubSerials(clubId);
     const serialsInFile = new Set<string>();
     const weaponCountByMember = await this.loadWeaponCounts(clubId);
@@ -252,14 +282,17 @@ export class MembersImportService {
 
     for (const row of weapons) {
       const formattedNumber = formatMemberNumber(club.memberNumberPrefix, row.memberNumber);
-      const memberId = formattedNumber ? memberByNumber.get(normalizeMemberKey(formattedNumber)) : undefined;
-      if (!memberId) {
+      const memberRef = formattedNumber
+        ? memberByNumber.get(normalizeMemberKey(formattedNumber))
+        : undefined;
+      if (!memberRef) {
         failed += 1;
         errors.push(
           `Armas fila ${row.sheetRow}: no hay socio con número ${formattedNumber || row.memberNumber}.`,
         );
         continue;
       }
+      const memberId = memberRef.id;
 
       const serial = normalizeWeaponSerial(row.serialNumber);
       if (!serial) {
@@ -296,7 +329,7 @@ export class MembersImportService {
           model: row.model,
           caliber: row.caliber,
         }),
-        modality: parseWeaponModalityInput(row.modalityRaw),
+        modality: resolveImportWeaponModality(row.modalityRaw, memberRef.modality),
         hasPeta: parseBoolInput(row.hasPetaRaw),
         registeredOn: parseIsoDateInput(row.registeredOnRaw, today),
       };
@@ -349,18 +382,19 @@ export class MembersImportService {
     return types;
   }
 
-  private async loadMemberIds(clubId: number): Promise<Map<string, number>> {
+  private async loadMemberRefs(clubId: number): Promise<Map<string, MemberImportRef>> {
     const rows = await this.memberRows.find({
       where: { clubId },
-      select: ['id', 'memberNumber'],
+      select: ['id', 'memberNumber', 'modality'],
     });
-    const map = new Map<string, number>();
+    const map = new Map<string, MemberImportRef>();
     for (const row of rows) {
-      map.set(normalizeMemberKey(row.memberNumber), row.id);
+      const ref: MemberImportRef = { id: row.id, modality: row.modality ?? '' };
+      map.set(normalizeMemberKey(row.memberNumber), ref);
       const digits = row.memberNumber.replace(/\D/g, '');
       if (digits) {
-        map.set(normalizeMemberKey(digits), row.id);
-        map.set(normalizeMemberKey(digits.replace(/^0+/, '') || digits), row.id);
+        map.set(normalizeMemberKey(digits), ref);
+        map.set(normalizeMemberKey(digits.replace(/^0+/, '') || digits), ref);
       }
     }
     return map;
@@ -466,11 +500,12 @@ function mapInlineWeaponsToPayloads(
   today: string,
   sheetRow: number,
   errors: string[],
+  memberModality?: string | null,
 ): WeaponPayloadDto[] {
   const weapons: WeaponPayloadDto[] = [];
   slots.forEach((slot, index) => {
     const label = `Socios fila ${sheetRow} arma ${index + 1}`;
-    const payload = inlineWeaponToPayload(slot, today, label, errors);
+    const payload = inlineWeaponToPayload(slot, today, label, errors, memberModality);
     if (payload) {
       weapons.push(payload);
     }
@@ -483,6 +518,7 @@ function inlineWeaponToPayload(
   today: string,
   label: string,
   errors?: string[],
+  memberModality?: string | null,
 ): WeaponPayloadDto | null {
   const enriched = enrichInlineWeaponSlot(slot);
   const brand = (enriched.brand ?? '').trim();
@@ -506,21 +542,21 @@ function inlineWeaponToPayload(
       model: enriched.model,
       caliber: enriched.caliber,
     }),
-    modality: parseWeaponModalityInput(enriched.modalityRaw ?? ''),
+    modality: resolveImportWeaponModality(enriched.modalityRaw ?? '', memberModality),
     hasPeta: parseBoolInput(enriched.hasPetaRaw ?? ''),
     registeredOn: parseIsoDateInput(enriched.registeredOnRaw ?? '', today),
   };
 }
 
-function findMemberIdInMap(
-  memberByNumber: Map<string, number>,
+function findMemberRefInMap(
+  memberByNumber: Map<string, MemberImportRef>,
   prefix: string | null | undefined,
   raw: string,
-): number | undefined {
+): MemberImportRef | undefined {
   for (const key of memberNumberLookupKeys(prefix, raw)) {
-    const id = memberByNumber.get(normalizeMemberKey(key));
-    if (id != null) {
-      return id;
+    const ref = memberByNumber.get(normalizeMemberKey(key));
+    if (ref != null) {
+      return ref;
     }
   }
   return undefined;
