@@ -1,6 +1,10 @@
 import * as XLSX from 'xlsx';
 import { WeaponPayloadDto } from './dto/member.dto';
-import { type MembersImportParseOptions } from './members-import-catalog';
+import {
+  buildAutoColumnMapping,
+  suggestImportFieldForHeader,
+  type MembersImportParseOptions,
+} from './members-import-catalog';
 import { resolveMemberFieldFromHeader } from './members-import-flex';
 import { normalizeKey } from './members-import-keys';
 import { extractInlineWeaponsFromRow, type InlineWeaponSlot } from './members-import-weapons-inline';
@@ -258,7 +262,8 @@ function parseMemberSheet(
     raw: false,
     range: headerRowIndex,
   });
-  const grouped = groupMemberImportRows(rows, headerRowIndex, errors, options?.columnMapping);
+  const columnMapping = options?.columnMapping ?? autoColumnMappingFromSheet(sheet, headerRowIndex);
+  const grouped = groupMemberImportRows(rows, headerRowIndex, errors, columnMapping);
   return grouped.map((row) => ({
     sheetRow: row.sheetRow,
     memberNumber: row.memberNumber,
@@ -276,6 +281,25 @@ function parseMemberSheet(
     address: row.address,
     inlineWeapons: row.inlineWeapons,
   }));
+}
+
+function autoColumnMappingFromSheet(
+  sheet: XLSX.WorkSheet,
+  headerRowIndex: number,
+): Record<string, import('./members-import-field-ids').ImportFieldId> {
+  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as unknown[][];
+  const headerRow = matrix[headerRowIndex];
+  if (!Array.isArray(headerRow)) {
+    return {};
+  }
+  const columns = headerRow
+    .map((cell) => (typeof cell === 'string' || typeof cell === 'number' ? String(cell) : ''))
+    .filter((header) => header.trim())
+    .map((header) => ({
+      header,
+      suggestedField: suggestImportFieldForHeader(header),
+    }));
+  return buildAutoColumnMapping(columns);
 }
 
 function detectMemberSheet(wb: XLSX.WorkBook): XLSX.WorkSheet | null {
@@ -410,6 +434,10 @@ export function parseIsoDateInput(raw: string, fallback: string): string {
 
 export function parseSexInput(raw: string): 'hombre' | 'mujer' | 'otro' {
   const value = raw.trim().toLowerCase();
+  if (!value) {
+    // Padrón club: si no viene sexo, default hombre (mayoría del padrón).
+    return 'hombre';
+  }
   if (value === 'h' || value === 'hombre' || value === 'masc' || value === 'masculino') {
     return 'hombre';
   }
@@ -419,7 +447,7 @@ export function parseSexInput(raw: string): 'hombre' | 'mujer' | 'otro' {
   if (value === 'otro' || value === 'x' || value === 'nb') {
     return 'otro';
   }
-  return 'otro';
+  return 'hombre';
 }
 
 const PLATFORMS = new Set(['pistola', 'revolver', 'escopeta', 'rifle', 'otro']);

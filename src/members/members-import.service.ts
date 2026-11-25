@@ -28,6 +28,7 @@ import {
   resolveMembershipCode,
 } from './members-import.parser';
 import { buildMemberImportPreview, type MemberImportPreview } from './members-import-preview';
+import { enrichInlineWeaponSlot } from './members-import-weapons-inline';
 import { MembersService } from './members.service';
 
 export interface MemberImportResult {
@@ -88,11 +89,15 @@ export class MembersImportService {
     }
 
     const existingNumbers = await this.loadMemberNumberLookupKeys(clubId, club.memberNumberPrefix);
-    const seenInFile = new Set<string>();
+    const memberByNumber = await this.loadMemberIds(clubId);
+    const existingSerials = await this.loadClubSerials(clubId);
+    const weaponCountByMember = await this.loadWeaponCounts(clubId);
+    const seenInFile = new Map<string, number>();
     const errors = [...parseErrors];
     let created = 0;
     let skipped = 0;
     let failed = 0;
+    let weaponsAppended = 0;
     const today = new Date().toISOString().slice(0, 10);
 
     for (const row of members) {
@@ -103,17 +108,59 @@ export class MembersImportService {
         continue;
       }
       const importKeys = memberNumberLookupKeys(club.memberNumberPrefix, row.memberNumber);
-      if (importKeys.some((key) => existingNumbers.has(key))) {
-        skipped += 1;
-        errors.push(`Socios fila ${row.sheetRow}: ${formattedNumber} ya existe en el club; se omitió.`);
+      const weapons = mapInlineWeaponsToPayloads(row.inlineWeapons, today, row.sheetRow, errors);
+
+      const existingMemberId =
+        findMemberIdInMap(memberByNumber, club.memberNumberPrefix, row.memberNumber) ??
+        (importKeys.some((key) => existingNumbers.has(key))
+          ? memberByNumber.get(normalizeMemberKey(formattedNumber))
+          : undefined);
+
+      if (existingMemberId != null) {
+        const appended = await this.appendMissingWeaponsForMember(
+          clubId,
+          existingMemberId,
+          formattedNumber,
+          row.sheetRow,
+          weapons,
+          actor.id,
+          existingSerials,
+          weaponCountByMember,
+          errors,
+        );
+        if (appended > 0) {
+          weaponsAppended += appended;
+        } else {
+          skipped += 1;
+          errors.push(`Socios fila ${row.sheetRow}: ${formattedNumber} ya existe en el club; se omitió.`);
+        }
+        for (const key of importKeys) {
+          existingNumbers.add(key);
+        }
         continue;
       }
-      if (seenInFile.has(formattedNumber)) {
-        skipped += 1;
-        errors.push(`Socios fila ${row.sheetRow}: ${formattedNumber} duplicado en el archivo; se omitió.`);
+
+      const seenMemberId = seenInFile.get(formattedNumber);
+      if (seenMemberId != null) {
+        const appended = await this.appendMissingWeaponsForMember(
+          clubId,
+          seenMemberId,
+          formattedNumber,
+          row.sheetRow,
+          weapons,
+          actor.id,
+          existingSerials,
+          weaponCountByMember,
+          errors,
+        );
+        if (appended > 0) {
+          weaponsAppended += appended;
+        } else {
+          skipped += 1;
+          errors.push(`Socios fila ${row.sheetRow}: ${formattedNumber} duplicado en el archivo; se omitió.`);
+        }
         continue;
       }
-      seenInFile.add(formattedNumber);
 
       const resolved = resolveImportMembershipWithDefault(row.membershipRaw, row.membershipModalityRaw, allowed);
       if (!resolved) {
@@ -124,9 +171,6 @@ export class MembersImportService {
         continue;
       }
       const joinedOn = parseIsoDateInput(row.joinedOnRaw, today);
-      const weapons = row.inlineWeapons.map((slot, index) =>
-        inlineWeaponToPayload(slot, today, `Socios fila ${row.sheetRow} arma ${index + 1}`),
-      ).filter((weapon): weapon is WeaponPayloadDto => weapon !== null);
       const dto: CreateMemberDto = {
         memberNumber: row.memberNumber,
         firstName: row.firstName,
@@ -144,8 +188,20 @@ export class MembersImportService {
         weapons: weapons.length > 0 ? weapons : undefined,
       };
       try {
-        await this.members.create(clubId, actor, dto, { quiet: true, ...createContext });
+        const createdMember = await this.members.create(clubId, actor, dto, { quiet: true, ...createContext });
         created += 1;
+        const memberId = Number((createdMember as { id?: number }).id);
+        if (Number.isFinite(memberId) && memberId > 0) {
+          seenInFile.set(formattedNumber, memberId);
+          memberByNumber.set(normalizeMemberKey(formattedNumber), memberId);
+          weaponCountByMember.set(memberId, weapons.length);
+          for (const weapon of weapons) {
+            const serial = normalizeWeaponSerial(weapon.serialNumber ?? '');
+            if (serial) {
+              existingSerials.add(serial);
+            }
+          }
+        }
         for (const key of importKeys) {
           existingNumbers.add(key);
         }
@@ -166,6 +222,9 @@ export class MembersImportService {
 
     if (created > 0) {
       await this.members.recordImportSummaryNotification(clubId, actor, created);
+    }
+    if (weaponsAppended > 0) {
+      await this.members.recordWeaponsImportSummaryNotification(clubId, actor, weaponsAppended);
     }
 
     return { created, skipped, failed, errors: errors.slice(0, 50) };
@@ -296,8 +355,57 @@ export class MembersImportService {
     const map = new Map<string, number>();
     for (const row of rows) {
       map.set(normalizeMemberKey(row.memberNumber), row.id);
+      const digits = row.memberNumber.replace(/\D/g, '');
+      if (digits) {
+        map.set(normalizeMemberKey(digits), row.id);
+        map.set(normalizeMemberKey(digits.replace(/^0+/, '') || digits), row.id);
+      }
     }
     return map;
+  }
+
+  private async appendMissingWeaponsForMember(
+    clubId: number,
+    memberId: number,
+    formattedNumber: string,
+    sheetRow: number,
+    weapons: WeaponPayloadDto[],
+    actorUserId: number,
+    existingSerials: Set<string>,
+    weaponCountByMember: Map<number, number>,
+    errors: string[],
+  ): Promise<number> {
+    if (weapons.length === 0) {
+      return 0;
+    }
+    let appended = 0;
+    for (const payload of weapons) {
+      const serial = normalizeWeaponSerial(payload.serialNumber ?? '');
+      if (serial && existingSerials.has(serial)) {
+        continue;
+      }
+      const currentCount = weaponCountByMember.get(memberId) ?? 0;
+      if (currentCount >= 10) {
+        errors.push(`Socios fila ${sheetRow}: el socio ${formattedNumber} ya tiene 10 armas; no se agregaron más.`);
+        break;
+      }
+      try {
+        await this.members.appendWeaponsForImport(clubId, memberId, [payload], actorUserId);
+        appended += 1;
+        if (serial) {
+          existingSerials.add(serial);
+        }
+        weaponCountByMember.set(memberId, currentCount + 1);
+      } catch (error) {
+        errors.push(`Socios fila ${sheetRow} arma (${payload.brand}): ${importErrorMessage(error)}`);
+      }
+    }
+    if (appended > 0) {
+      errors.push(
+        `Socios fila ${sheetRow}: ${formattedNumber} ya existía; se agregaron ${appended} arma(s) faltante(s).`,
+      );
+    }
+    return appended;
   }
 
   private async loadClubSerials(clubId: number): Promise<Set<string>> {
@@ -351,33 +459,69 @@ function normalizeRfcImport(raw: string): string {
   return 'XAXX010101000';
 }
 
+function mapInlineWeaponsToPayloads(
+  slots: ReadonlyArray<import('./members-import-weapons-inline').InlineWeaponSlot>,
+  today: string,
+  sheetRow: number,
+  errors: string[],
+): WeaponPayloadDto[] {
+  const weapons: WeaponPayloadDto[] = [];
+  slots.forEach((slot, index) => {
+    const label = `Socios fila ${sheetRow} arma ${index + 1}`;
+    const payload = inlineWeaponToPayload(slot, today, label, errors);
+    if (payload) {
+      weapons.push(payload);
+    }
+  });
+  return weapons;
+}
+
 function inlineWeaponToPayload(
   slot: import('./members-import-weapons-inline').InlineWeaponSlot,
   today: string,
   label: string,
+  errors?: string[],
 ): WeaponPayloadDto | null {
-  const brand = (slot.brand ?? '').trim();
-  const model = (slot.model ?? '').trim();
-  const caliber = (slot.caliber ?? '').trim();
+  const enriched = enrichInlineWeaponSlot(slot);
+  const brand = (enriched.brand ?? '').trim();
+  const model = (enriched.model ?? '').trim();
+  const caliber = (enriched.caliber ?? '').trim();
   if (!brand || !model || !caliber) {
+    errors?.push(
+      `${label}: marca, modelo y calibre son obligatorios (recibido marca=«${brand || '—'}», modelo=«${model || '—'}», calibre=«${caliber || '—'}»).`,
+    );
     return null;
   }
-  const serial = normalizeWeaponSerial(slot.serialNumber ?? '');
+  const serial = normalizeWeaponSerial(enriched.serialNumber ?? '');
   return {
     brand,
     model,
     caliber,
     serialNumber: serial,
     platform: resolveImportWeaponPlatform({
-      platformRaw: slot.platformRaw,
-      brand: slot.brand,
-      model: slot.model,
-      caliber: slot.caliber,
+      platformRaw: enriched.platformRaw,
+      brand: enriched.brand,
+      model: enriched.model,
+      caliber: enriched.caliber,
     }),
-    modality: parseWeaponModalityInput(slot.modalityRaw ?? ''),
-    hasPeta: parseBoolInput(slot.hasPetaRaw ?? ''),
-    registeredOn: parseIsoDateInput(slot.registeredOnRaw ?? '', today),
+    modality: parseWeaponModalityInput(enriched.modalityRaw ?? ''),
+    hasPeta: parseBoolInput(enriched.hasPetaRaw ?? ''),
+    registeredOn: parseIsoDateInput(enriched.registeredOnRaw ?? '', today),
   };
+}
+
+function findMemberIdInMap(
+  memberByNumber: Map<string, number>,
+  prefix: string | null | undefined,
+  raw: string,
+): number | undefined {
+  for (const key of memberNumberLookupKeys(prefix, raw)) {
+    const id = memberByNumber.get(normalizeMemberKey(key));
+    if (id != null) {
+      return id;
+    }
+  }
+  return undefined;
 }
 
 function memberNumberLookupKeys(prefix: string | null | undefined, raw: string): string[] {

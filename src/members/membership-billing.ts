@@ -87,7 +87,7 @@ function sliceEnd(start: string, billing: MembershipBillingPeriod, fiscalEnd: st
   return minIso(end, fiscalEnd);
 }
 
-/** Tramo de cobro vigente que contiene `today` según el calendario del plan. */
+/** Tramo de cobro vigente que contiene `today` según el calendario de la modalidad. */
 export function billingSliceForDate(
   rule: PeriodRule,
   billing: MembershipBillingPeriod,

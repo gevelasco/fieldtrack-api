@@ -118,8 +118,11 @@ function weaponIndexFromHeader(key: string): { index: number; field: keyof Omit<
   if (/calibre|(^|_)cal($|_)/.test(key)) {
     return { index: 1, field: 'caliber' };
   }
-  if (/numero[_-]?serie|num[_-]?serie|(^|_)serie($|_)/.test(key)) {
+  if (/numero[_-]?serie|num[_-]?serie|(^|_)serie($|_)/.test(key) || /matricula/.test(key)) {
     return { index: 1, field: 'serialNumber' };
+  }
+  if (/clase/.test(key) && /arma/.test(key)) {
+    return { index: 1, field: 'platformRaw' };
   }
   return null;
 }
@@ -131,6 +134,71 @@ function cellText(value: unknown): string {
   return String(value).trim();
 }
 
+const PLATFORM_TOKEN = 'pistola|revolver|rev[oó]lver|escopeta|rifle|carabina';
+/** «PISTOLA - BROWNING - 446755» → plataforma, marca, serie. */
+const PACKED_PLATFORM_BRAND_SERIAL = new RegExp(
+  `^(${PLATFORM_TOKEN})\\s*[-–—/|]\\s*(.+?)\\s*[-–—/|]\\s*([A-Za-z0-9][A-Za-z0-9._/-]*)$`,
+  'i',
+);
+
+function splitDashParts(raw: string): string[] {
+  return raw
+    .split(/\s*[-–—|]\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Completa huecos típicos de padrones club/PRD:
+ * - celdas «TIPO - MARCA - SERIE»
+ * - calibre «9 MM - 122 - 30/03/2026» → solo el calibre
+ * - marca+calibre sin modelo → «S/M»
+ */
+export function enrichInlineWeaponSlot(slot: InlineWeaponSlot): InlineWeaponSlot {
+  const out: InlineWeaponSlot = { ...slot };
+
+  for (const key of ['platformRaw', 'brand', 'model'] as const) {
+    const raw = (out[key] ?? '').trim();
+    if (!raw) {
+      continue;
+    }
+    const packed = PACKED_PLATFORM_BRAND_SERIAL.exec(raw);
+    if (!packed) {
+      continue;
+    }
+    out.platformRaw = (out.platformRaw ?? '').trim() || packed[1].trim();
+    const extractedBrand = packed[2].trim();
+    const extractedSerial = packed[3].trim();
+    if (!(out.brand ?? '').trim() || PACKED_PLATFORM_BRAND_SERIAL.test((out.brand ?? '').trim())) {
+      out.brand = extractedBrand;
+    }
+    if (!(out.serialNumber ?? '').trim()) {
+      out.serialNumber = extractedSerial;
+    }
+    if (key === 'model' && PACKED_PLATFORM_BRAND_SERIAL.test(raw)) {
+      out.model = undefined;
+    }
+    break;
+  }
+
+  const caliberRaw = (out.caliber ?? '').trim();
+  if (caliberRaw && /[-–—]/.test(caliberRaw)) {
+    const parts = splitDashParts(caliberRaw);
+    if (parts.length >= 2 && /\d/.test(parts[0])) {
+      out.caliber = parts[0];
+    }
+  }
+
+  const brand = (out.brand ?? '').trim();
+  const model = (out.model ?? '').trim();
+  const caliber = (out.caliber ?? '').trim();
+  if (brand && caliber && !model) {
+    out.model = 'S/M';
+  }
+
+  return out;
+}
+
 /** Armas en las mismas filas del padrón (columnas en orden con alias conocidos o mapeo manual). */
 export function extractInlineWeaponsFromRow(
   raw: Record<string, unknown>,
@@ -138,15 +206,20 @@ export function extractInlineWeaponsFromRow(
 ): InlineWeaponSlot[] {
   const slots = new Map<number, InlineWeaponSlot>();
   for (const [header, value] of Object.entries(raw)) {
-    const mapped = resolveMappedWeaponField(header, columnMapping);
     if (columnMapping?.[header] === 'ignore' || columnMapping?.[normalizeKey(header)] === 'ignore') {
       continue;
     }
-    if (!mapped && isIgnoredImportHeader(header)) {
+    if (isIgnoredImportHeader(header)) {
       continue;
     }
+    const mapped = resolveMappedWeaponField(header, columnMapping);
     const key = normalizeKey(header);
-    const match = mapped ?? weaponIndexFromHeader(key);
+    const fromHeader = matchWeaponFieldFromHeader(header);
+    const fromHeaderSlot =
+      fromHeader && isWeaponImportFieldId(fromHeader)
+        ? { index: weaponIndexFromHeader(key)?.index ?? 1, field: WEAPON_IMPORT_TO_SLOT[fromHeader] }
+        : null;
+    const match = mapped ?? weaponIndexFromHeader(key) ?? fromHeaderSlot;
     if (!match) {
       continue;
     }
@@ -159,6 +232,7 @@ export function extractInlineWeaponsFromRow(
     slots.set(match.index, slot);
   }
   return [...slots.values()]
+    .map((slot) => enrichInlineWeaponSlot(slot))
     .filter((slot) => slot.brand || slot.model || slot.caliber || slot.serialNumber)
     .sort((a, b) => a.index - b.index);
 }

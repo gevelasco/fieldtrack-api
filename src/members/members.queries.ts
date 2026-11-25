@@ -137,9 +137,10 @@ function statusRank(
     params.push(value);
     return `$${params.length}::date`;
   };
+  // Claves `planCode::modalidad` (calendario de Controles × frecuencia del plan).
   const periodStart =
     entries.length > 0
-      ? `CASE m.membership ${entries
+      ? `CASE (m.membership || '::' || m.modality) ${entries
           .map(([code, start]) => `WHEN '${code.replace(/'/g, "''")}' THEN ${param(start)}`)
           .join(' ')} ELSE ${param(periods['tiro-deportivo'].start)} END`
       : param(periods['tiro-deportivo'].start);

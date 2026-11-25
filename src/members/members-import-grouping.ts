@@ -214,7 +214,46 @@ function mergeAddressFragment(current: string, incoming: string | undefined): st
   if (next.includes(current)) {
     return next;
   }
-  return `${current} ${next}`;
+  // «JARDINES … COLIMA» + «COLIMA CP:28030» → evita «COLIMA COLIMA CP:…»
+  const currentTrim = current.replace(/\s+/g, ' ').trim();
+  const nextTrim = next.replace(/\s+/g, ' ').trim();
+  const nextCp = /^(.*\bCOLIMA\b)\s+(CP[:\s.]*\d{5})$/i.exec(nextTrim);
+  if (nextCp && new RegExp(`${escapeRegExp(nextCp[1].trim())}\\s*$`, 'i').test(currentTrim)) {
+    return `${currentTrim} ${nextCp[2]}`;
+  }
+  if (/^COLIMA\b/i.test(nextTrim) && /\bCOLIMA\s*$/i.test(currentTrim)) {
+    return `${currentTrim.replace(/\bCOLIMA\s*$/i, '').trim()} ${nextTrim}`.replace(/\s+/g, ' ').trim();
+  }
+  return `${currentTrim} ${nextTrim}`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Normaliza direcciones multi-línea del padrón Coliman:
+ * calle + colonia + «COLIMA CP:#####» → una sola línea sin CP/estado duplicados.
+ */
+export function finalizeImportAddress(raw: string): string {
+  const text = raw.replace(/\s+/g, ' ').trim();
+  if (!text) {
+    return '';
+  }
+  const cpMatches = [...text.matchAll(/\bCP[:\s.]*(\d{5})\b/gi)];
+  const zip = cpMatches.length ? cpMatches[cpMatches.length - 1][1] : '';
+  let body = text.replace(/\bCP[:\s.]*\d{5}\b/gi, ' ').replace(/\s+/g, ' ').trim();
+  // Quita «COLIMA COL.» / «COLIMA» repetidos al final (líneas de estado del padrón).
+  body = body.replace(/(?:[\s,]+COL\.?)*[\s,]+COLIMA(?:[\s,]+COLIMA)*(?:[\s,]+COL\.?)*$/i, '').trim();
+  body = body.replace(/\bCOLIMA(?:[\s,]+COLIMA)*(?:[\s,]+COL\.?)*$/i, '').trim();
+  body = body.replace(/[,\s]+$/g, '').trim();
+  if (!body) {
+    return zip ? `COLIMA CP:${zip}` : '';
+  }
+  if (zip) {
+    return `${body}, COLIMA CP:${zip}`;
+  }
+  return body;
 }
 
 function mergeWeapons(target: InlineWeaponSlot[], incoming: InlineWeaponSlot[]): void {
@@ -375,10 +414,13 @@ function resolveGroupedMemberAddress(group: MemberGroup): string {
     zip: group.zip,
   });
   const full = group.fullAddress.trim();
+  let merged = '';
   if (full && composed) {
-    return full.includes(composed) ? full : `${full}, ${composed}`;
+    merged = full.includes(composed) ? full : `${full}, ${composed}`;
+  } else {
+    merged = full || composed;
   }
-  return full || composed;
+  return finalizeImportAddress(merged);
 }
 
 function finalizeGroup(group: MemberGroup, errors: string[]): GroupedImportMemberRow | null {
@@ -423,8 +465,60 @@ function finalizeGroup(group: MemberGroup, errors: string[]): GroupedImportMembe
 }
 
 /**
+ * Une bloques no consecutivos del mismo socio (p. ej. armas repartidas en el Excel)
+ * para no perder armas al omitir «duplicados» en la importación.
+ */
+function consolidateGroupedMembers(members: GroupedImportMemberRow[]): GroupedImportMemberRow[] {
+  const byKey = new Map<string, GroupedImportMemberRow>();
+  const order: string[] = [];
+
+  for (const row of members) {
+    const numberKey = normalizeKey(row.memberNumber);
+    const curpKey = normalizeKey(row.curp);
+    const key = numberKey || curpKey;
+    if (!key) {
+      continue;
+    }
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, {
+        ...row,
+        inlineWeapons: [...row.inlineWeapons],
+        sourceSheetRows: [...row.sourceSheetRows],
+      });
+      order.push(key);
+      continue;
+    }
+    mergeWeapons(existing.inlineWeapons, row.inlineWeapons);
+    for (const sheetRow of row.sourceSheetRows) {
+      if (!existing.sourceSheetRows.includes(sheetRow)) {
+        existing.sourceSheetRows.push(sheetRow);
+      }
+    }
+    if (!existing.address.trim() && row.address.trim()) {
+      existing.address = row.address;
+    }
+    if (!existing.email.trim() && row.email.trim()) {
+      existing.email = row.email;
+    }
+    if (!existing.phone.trim() && row.phone.trim()) {
+      existing.phone = row.phone;
+    }
+    if (!existing.membershipRaw.trim() && row.membershipRaw.trim()) {
+      existing.membershipRaw = row.membershipRaw;
+    }
+    if (!existing.membershipModalityRaw.trim() && row.membershipModalityRaw.trim()) {
+      existing.membershipModalityRaw = row.membershipModalityRaw;
+    }
+  }
+
+  return order.map((key) => byKey.get(key)!);
+}
+
+/**
  * Un socio puede ocupar varias filas (celdas fusionadas + una fila por arma u otro dato).
- * Agrupa filas consecutivas hasta el siguiente numero_socio o CURP distinto.
+ * Agrupa filas consecutivas hasta el siguiente numero_socio o CURP distinto,
+ * y luego consolida bloques del mismo socio aunque no sean contiguos.
  */
 export function groupMemberImportRows(
   rawRows: Record<string, unknown>[],
@@ -483,5 +577,5 @@ export function groupMemberImportRows(
   });
 
   flush();
-  return members;
+  return consolidateGroupedMembers(members);
 }

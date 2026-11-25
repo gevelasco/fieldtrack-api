@@ -21,7 +21,6 @@ import {
   billingSliceForStart,
   pendingBillingPeriods,
   resolveMemberStatusForPlan,
-  ruleFromPlan,
   type MembershipBillingPeriod,
 } from './membership-billing';
 import { type PeriodRule } from './membership-status';
@@ -67,6 +66,15 @@ export function calendarFromClub(club: Club): MembershipCalendar {
   };
 }
 
+/**
+ * El periodo fiscal lo marcan las modalidades en Controles (tiro / cacería),
+ * no las fechas del plan de membresía (cuota / frecuencia de cobro).
+ */
+export function ruleForModality(club: Club, modality: string): PeriodRule {
+  const calendar = calendarFromClub(club);
+  return modality === 'caza' ? calendar.hunting : calendar.sportShooting;
+}
+
 export function feeForMembership(
   club: Club,
   modality: string,
@@ -109,7 +117,7 @@ export function mapMember(
     membershipTypes[0] ??
     null;
   const calendar = calendarFromClub(club);
-  const rule = plan ? ruleFromPlan(plan) : modality === 'caza' ? calendar.hunting : calendar.sportShooting;
+  const rule = ruleForModality(club, modality);
   const billingPeriod = plan?.billingPeriod ?? 'anual';
   const currentPeriod = billingSliceForDate(rule, billingPeriod);
   let payments: ReturnType<typeof mapPayment>[] = [];

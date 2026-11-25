@@ -60,8 +60,9 @@ import {
   mapMember,
   memberDisplayName,
   modalityAllowsPeta,
+  ruleForModality,
 } from './member.mapper';
-import { MembershipCode, membershipPeriod, withinPeriod } from './membership-status';
+import { MembershipCode, membershipPeriod, type PeriodRule, withinPeriod } from './membership-status';
 import {
   billingSliceForDate,
   billingSliceForStart,
@@ -69,7 +70,6 @@ import {
   pendingBillingPeriods,
   periodCoveredForPlan,
   resolveMemberStatusForPlan,
-  ruleFromPlan,
   type MembershipBillingPeriod,
 } from './membership-billing';
 import {
@@ -117,12 +117,7 @@ export class MembersService {
     if (query.modality) {
       assertModalityEnabledForClub(plans, query.modality);
     }
-    const billingPeriodStarts = Object.fromEntries(
-      plans.map((plan) => [
-        plan.code,
-        billingSliceForDate(ruleFromPlan(plan), plan.billingPeriod).start,
-      ]),
-    );
+    const billingPeriodStarts = billingPeriodStartsByPlanAndModality(plans, club);
     const found = await searchMemberIds(this.dataSource.manager, {
       clubId,
       modality: query.modality,
@@ -158,12 +153,7 @@ export class MembersService {
     const club = await this.requireClub(clubId);
     const calendar = calendarFromClub(club);
     const plans = await this.membershipPlans(clubId, club);
-    const billingPeriodStarts = Object.fromEntries(
-      plans.map((plan) => [
-        plan.code,
-        billingSliceForDate(ruleFromPlan(plan), plan.billingPeriod).start,
-      ]),
-    );
+    const billingPeriodStarts = billingPeriodStartsByPlanAndModality(plans, club);
     return memberSummary(this.dataSource.manager, clubId, {
       'tiro-deportivo': membershipPeriod('tiro-deportivo', calendar),
       caza: membershipPeriod('caza', calendar),
@@ -271,7 +261,7 @@ export class MembersService {
       await this.writeDocuments(manager, saved.id, dto.documents ?? [], true);
       await this.writeMemberPhoto(manager, saved, dto.photo ?? undefined, false);
       await this.writeWeapons(manager, clubId, saved.id, dto.weapons ?? [], actor.id);
-      const rule = ruleFromPlan(plan);
+      const rule = ruleForModality(club, modality);
       const billingPeriod = plan.billingPeriod;
       const paidOn = firstPaymentDateForPlan(dto.joinedOn, rule, billingPeriod);
       const period = billingSliceForDate(rule, billingPeriod);
@@ -1155,17 +1145,32 @@ function memberPlanContext(
   plans: readonly MembershipTypeRow[],
   member: Member,
   club: Club,
-): { plan: MembershipTypeRow | null; rule: ReturnType<typeof ruleFromPlan>; billingPeriod: MembershipBillingPeriod } {
+): { plan: MembershipTypeRow | null; rule: PeriodRule; billingPeriod: MembershipBillingPeriod } {
   const modality = member.modality as MembershipCode;
-  const calendar = calendarFromClub(club);
   const plan = plans.find((row) => row.code === member.membership) ?? plans[0] ?? null;
-  const rule = plan
-    ? ruleFromPlan(plan)
-    : modality === 'caza'
-      ? calendar.hunting
-      : calendar.sportShooting;
+  const rule = ruleForModality(club, modality);
   const billingPeriod = plan?.billingPeriod ?? 'anual';
   return { plan, rule, billingPeriod };
+}
+
+/** Inicio de cobro actual por plan+modalidad (calendario de Controles × frecuencia del plan). */
+function billingPeriodStartsByPlanAndModality(
+  plans: readonly MembershipTypeRow[],
+  club: Club,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const plan of plans) {
+    if (plan.allowsSportShooting) {
+      out[`${plan.code}::tiro-deportivo`] = billingSliceForDate(
+        ruleForModality(club, 'tiro-deportivo'),
+        plan.billingPeriod,
+      ).start;
+    }
+    if (plan.allowsHunting) {
+      out[`${plan.code}::caza`] = billingSliceForDate(ruleForModality(club, 'caza'), plan.billingPeriod).start;
+    }
+  }
+  return out;
 }
 
 function paymentSlices(member: Member) {
