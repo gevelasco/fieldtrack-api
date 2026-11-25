@@ -21,6 +21,15 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 
 export type ThemeScheme = 'light' | 'dark';
 
+export type MemberSessionProfile = {
+  memberNumber: string;
+  firstName: string;
+  paternalSurname: string;
+  curp: string;
+  rfc: string;
+  address: string;
+};
+
 @Injectable({ scope: Scope.REQUEST })
 export class SessionService {
   constructor(
@@ -36,6 +45,7 @@ export class SessionService {
     club: Club;
     theme: ThemeScheme;
     memberNumber: string | null;
+    memberProfile: MemberSessionProfile | null;
   }> {
     const payload = this.request.user;
     if (!payload?.sub) {
@@ -47,10 +57,10 @@ export class SessionService {
     if (!user) {
       throw new UnauthorizedException('Inicia sesión.');
     }
-    const [club, theme, memberNumber] = await Promise.all([
+    const [club, theme, memberProfile] = await Promise.all([
       this.clubs.findOne({ where: { id: user.clubId } }),
       this.themeOf(user.id),
-      this.rawMemberNumberOf(user),
+      this.memberProfileOf(user),
     ]);
     if (!club) {
       throw new NotFoundException('No hay un club para esta sesión.');
@@ -59,24 +69,38 @@ export class SessionService {
       user,
       club,
       theme,
-      memberNumber: memberNumber
-        ? displayMemberNumber(memberNumber, club.memberNumberPrefix) || null
+      memberNumber: memberProfile?.memberNumber
+        ? displayMemberNumber(memberProfile.memberNumber, club.memberNumberPrefix) || null
         : null,
+      memberProfile,
     };
   }
 
-  private async rawMemberNumberOf(user: AppUser): Promise<string | null> {
+  private async memberProfileOf(user: AppUser): Promise<MemberSessionProfile | null> {
     if (user.role !== 'socio') {
       return null;
     }
     const member = await this.members.findOne({
       where: { clubId: user.clubId, userId: user.id },
-      select: ['id', 'memberNumber'],
+      select: ['id', 'memberNumber', 'firstName', 'paternalSurname', 'curp', 'rfc', 'address'],
     });
-    return member?.memberNumber ?? null;
+    if (!member) {
+      return null;
+    }
+    return {
+      memberNumber: member.memberNumber,
+      firstName: member.firstName ?? '',
+      paternalSurname: member.paternalSurname ?? '',
+      curp: member.curp ?? '',
+      rfc: member.rfc ?? '',
+      address: member.address ?? '',
+    };
   }
 
-  async updateProfile(userId: number, dto: UpdateProfileDto): Promise<AppUser> {
+  async updateProfile(
+    userId: number,
+    dto: UpdateProfileDto,
+  ): Promise<{ user: AppUser; memberProfile: MemberSessionProfile | null }> {
     const user = await this.users.findOne({ where: { id: userId, status: 'active' } });
     if (!user) {
       throw new UnauthorizedException('Inicia sesión.');
@@ -128,7 +152,35 @@ export class SessionService {
       await this.preferences.save({ userId, themeScheme: dto.theme });
     }
 
-    return user;
+    let memberProfile = await this.memberProfileOf(user);
+    if (user.role === 'socio' && (dto.curp !== undefined || dto.rfc !== undefined || dto.address !== undefined)) {
+      const member = await this.members.findOne({
+        where: { clubId: user.clubId, userId: user.id },
+      });
+      if (!member) {
+        throw new NotFoundException('No hay un expediente de socio vinculado a esta cuenta.');
+      }
+      if (dto.curp !== undefined) {
+        member.curp = normalizeMemberCurp(dto.curp);
+      }
+      if (dto.rfc !== undefined) {
+        member.rfc = normalizeMemberRfc(dto.rfc);
+      }
+      if (dto.address !== undefined) {
+        member.address = dto.address.trim();
+      }
+      await this.members.save(member);
+      memberProfile = {
+        memberNumber: member.memberNumber,
+        firstName: member.firstName ?? '',
+        paternalSurname: member.paternalSurname ?? '',
+        curp: member.curp ?? '',
+        rfc: member.rfc ?? '',
+        address: member.address ?? '',
+      };
+    }
+
+    return { user, memberProfile };
   }
 
   async themeOf(userId: number): Promise<ThemeScheme> {
@@ -163,6 +215,7 @@ export function mapSession(
     cantidadPagarMxn: number;
     totalPagarMxn: number;
   }[] = [],
+  memberProfile: MemberSessionProfile | null = null,
 ) {
   return {
     user: {
@@ -176,6 +229,11 @@ export function mapSession(
       photoDataUrl: user.photoDataUrl,
       theme,
       memberNumber,
+      firstName: memberProfile?.firstName ?? null,
+      paternalSurname: memberProfile?.paternalSurname ?? null,
+      curp: memberProfile?.curp ?? null,
+      rfc: memberProfile?.rfc ?? null,
+      address: memberProfile?.address ?? null,
       modulePermissions:
         user.role === 'staff' ? normalizeStaffModulePermissions(user.modulePermissions) : null,
     },
@@ -224,4 +282,26 @@ export function mapSession(
       })),
     },
   };
+}
+
+function normalizeMemberCurp(value: string): string {
+  const curp = value.trim().toUpperCase();
+  if (!curp) {
+    return '';
+  }
+  if (!/^[A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d$/.test(curp)) {
+    throw new BadRequestException('Escribe una CURP válida (18 caracteres).');
+  }
+  return curp;
+}
+
+function normalizeMemberRfc(value: string): string {
+  const rfc = value.trim().toUpperCase();
+  if (!rfc) {
+    return '';
+  }
+  if (!/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(rfc)) {
+    throw new BadRequestException('Escribe un RFC válido.');
+  }
+  return rfc;
 }

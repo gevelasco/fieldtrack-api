@@ -27,6 +27,7 @@ export class SessionController {
       settings.membershipTypes,
       actor.memberNumber,
       settings.officialFormFees,
+      actor.memberProfile,
     );
   }
 
@@ -34,17 +35,21 @@ export class SessionController {
   @ApiOperation({ summary: 'Actualizar perfil, foto o tema de quien tiene la sesión' })
   async profile(@Body() dto: UpdateProfileDto) {
     const actor = await this.session.current();
-    const user = await this.session.updateProfile(actor.user.id, dto);
+    const updated = await this.session.updateProfile(actor.user.id, dto);
     const theme = dto.theme ?? actor.theme;
     const settings = await this.clubSettings.read(actor.club.id);
+    const memberNumber = updated.memberProfile?.memberNumber
+      ? actor.memberNumber
+      : actor.memberNumber;
     return mapSession(
-      user,
+      updated.user,
       actor.club,
       theme,
       settings.requiredDocuments,
       settings.membershipTypes,
-      actor.memberNumber,
+      memberNumber,
       settings.officialFormFees,
+      updated.memberProfile,
     );
   }
 

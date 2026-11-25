@@ -25,4 +25,20 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsIn(['light', 'dark'])
   theme?: 'light' | 'dark';
+
+  /** Solo socios: datos del expediente. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(18)
+  curp?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(13)
+  rfc?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(240)
+  address?: string;
 }
