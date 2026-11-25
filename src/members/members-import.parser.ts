@@ -120,7 +120,7 @@ export function buildSociosImportTemplateBuffer(membershipHints: string[]): Buff
     'Juan',
     'Pérez',
     'López',
-    membershipHints[0] ?? 'general',
+    membershipHints[0] ?? 'standard',
     'tiro-deportivo',
     '333 123 4567',
     'juan@ejemplo.com',

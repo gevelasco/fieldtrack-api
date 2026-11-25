@@ -69,6 +69,18 @@ export function parseModalityInput(raw: string): MembershipModality | null {
   return null;
 }
 
+const LEGACY_BASIC_PLAN_KEYS = new Set([
+  'general',
+  'membresia-general',
+  'membresia',
+  'basico',
+  'basica',
+  'basic',
+  'inicial',
+  'standard',
+  'socio',
+]);
+
 export function resolveImportMembership(
   planRaw: string,
   modalityRaw: string,
@@ -78,14 +90,15 @@ export function resolveImportMembership(
   if (!trimmed) {
     return null;
   }
-  const key = trimmed
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/\p{M}/gu, '')
-    .replace(/\s+/g, '-');
+  const key = normalizePlanLookupKey(trimmed);
   let plan =
     plans.find((row) => row.code === key) ??
+    plans.find((row) => normalizePlanLookupKey(row.name) === key) ??
     plans.find((row) => row.name.trim().toLowerCase() === trimmed.toLowerCase());
+  if (!plan && LEGACY_BASIC_PLAN_KEYS.has(key)) {
+    // Plantillas viejas / Excel con «general»: mapear al plan básico real del club (p. ej. Standard).
+    plan = defaultImportMembershipPlan(plans) ?? undefined;
+  }
   if (!plan) {
     const legacyModality = parseModalityInput(trimmed);
     if (legacyModality) {
@@ -118,7 +131,7 @@ function normalizePlanLookupKey(value: string): string {
 
 /**
  * Sin columna tipo_membresía en el Excel: si el club tiene un solo plan, todos entran ahí
- * (p. ej. standard / inicial / general). Con varios planes, el primero por sortOrder o uno «básico».
+ * (p. ej. standard). Con varios planes, el primero por sortOrder o uno «básico».
  */
 export function defaultImportMembershipPlan(plans: readonly MembershipTypeRow[]): MembershipTypeRow | null {
   if (!plans.length) {
@@ -127,19 +140,20 @@ export function defaultImportMembershipPlan(plans: readonly MembershipTypeRow[])
   if (plans.length === 1) {
     return plans[0];
   }
-  const basicCodes = new Set([
-    'standard',
-    'inicial',
-    'general',
-    'basico',
-    'basica',
-    'basic',
-    'socio',
-    'membresia',
-    'membresia-general',
-  ]);
-  const preferred = plans.find((row) => basicCodes.has(normalizePlanLookupKey(row.code)));
+  const preferred = plans.find((row) => LEGACY_BASIC_PLAN_KEYS.has(normalizePlanLookupKey(row.code)));
   return preferred ?? plans[0];
+}
+
+/** Si el socio tiene un código de plan que ya no existe en el club, usa el plan por defecto. */
+export function coerceMembershipPlanCode(
+  storedCode: string,
+  plans: readonly MembershipTypeRow[],
+): string {
+  const trimmed = storedCode.trim();
+  if (trimmed && plans.some((row) => row.code === trimmed)) {
+    return trimmed;
+  }
+  return defaultImportMembershipPlan(plans)?.code ?? trimmed;
 }
 
 /** Si el Excel no trae plan, usa el plan por defecto del club y la modalidad que permita. */

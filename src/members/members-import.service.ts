@@ -2,7 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { formatMemberNumber } from '../clubs/member-number';
-import { loadMembershipTypes, membershipTypesFromClub } from '../clubs/club-membership-types';
+import { loadMembershipTypes } from '../clubs/club-membership-types';
 import { resolveImportMembershipWithDefault } from '../clubs/membership-plans';
 import { ClubMembershipType } from '../clubs/entities/club-membership-type.entity';
 import { Club } from '../clubs/entities/club.entity';
@@ -339,10 +339,12 @@ export class MembersImportService {
   }
 
   private async membershipPlans(clubId: number) {
-    const club = await this.requireClub(clubId);
-    let types = await loadMembershipTypes(this.membershipTypes, clubId);
+    await this.requireClub(clubId);
+    const types = await loadMembershipTypes(this.membershipTypes, clubId);
     if (types.length === 0) {
-      types = membershipTypesFromClub(club);
+      throw new BadRequestException(
+        'Configura al menos un plan de membresía en Controles antes de importar socios.',
+      );
     }
     return types;
   }

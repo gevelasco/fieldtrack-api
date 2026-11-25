@@ -112,8 +112,12 @@ export function mapMember(
   const includePetaHistory = forList ? false : options.includePetaHistory !== false;
   const membershipTypes = options.membershipTypes ?? [];
   const modality = member.modality as MembershipCode;
+  const membershipCode =
+    membershipTypes.find((row) => row.code === member.membership)?.code ??
+    membershipTypes[0]?.code ??
+    member.membership;
   const plan =
-    membershipTypes.find((row) => row.code === member.membership) ??
+    membershipTypes.find((row) => row.code === membershipCode) ??
     membershipTypes[0] ??
     null;
   const calendar = calendarFromClub(club);
@@ -170,8 +174,8 @@ export function mapMember(
     joinedOn: asDate(member.joinedOn),
     sex: member.sex,
     modality,
-    membership: member.membership,
-    membershipName: plan?.name ?? member.membership,
+    membership: membershipCode,
+    membershipName: plan?.name ?? membershipCode,
     status,
     currentMembershipPeriod: {
       start: currentPeriod.start,

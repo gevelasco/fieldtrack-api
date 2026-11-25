@@ -23,6 +23,7 @@ import {
 import { hashPassword } from '../common/hash-password';
 import { assertStaffModuleAccess } from '../clubs/staff-access';
 import { loadMembershipTypes, membershipTypesFromClub } from '../clubs/club-membership-types';
+import { defaultImportMembershipPlan } from '../clubs/membership-plans';
 import { assertModalityEnabledForClub } from '../clubs/club-member-modalities';
 import { assertPlanAllowsModality } from '../clubs/membership-plans';
 import { Club } from '../clubs/entities/club.entity';
@@ -114,6 +115,7 @@ export class MembersService {
     const pageSize = query.pageSize ?? PAGE_SIZES[0];
     const calendar = calendarFromClub(club);
     const plans = await this.membershipPlans(clubId, club);
+    await this.repairOrphanMembershipCodes(clubId, plans);
     if (query.modality) {
       assertModalityEnabledForClub(plans, query.modality);
     }
@@ -167,12 +169,13 @@ export class MembersService {
 
   async findOne(clubId: number, memberId: number) {
     const club = await this.requireClub(clubId);
+    const plans = await this.membershipPlans(clubId, club);
+    await this.repairOrphanMembershipCodes(clubId, plans);
     const row = await loadMemberById(this.members, clubId, memberId, 'detail');
     if (!row) {
       throw new NotFoundException('No se encontró el socio.');
     }
     const requests = await openRequestsByMember(this.dataSource.manager, clubId, [row.id]);
-    const plans = await this.membershipPlans(clubId, club);
     return mapMember(row, club, requests.get(row.id), { membershipTypes: plans });
   }
 
@@ -197,6 +200,28 @@ export class MembersService {
       rows = membershipTypesFromClub(resolvedClub);
     }
     return rows;
+  }
+
+  /**
+   * Socios con código de plan obsoleto (p. ej. fallback hardcodeado `general`)
+   * pasan al plan real del club (Standard, etc.).
+   */
+  private async repairOrphanMembershipCodes(
+    clubId: number,
+    plans: Awaited<ReturnType<MembersService['membershipPlans']>>,
+  ): Promise<void> {
+    const fallback = defaultImportMembershipPlan(plans);
+    if (!fallback || plans.length === 0) {
+      return;
+    }
+    const validCodes = plans.map((row) => row.code);
+    await this.members
+      .createQueryBuilder()
+      .update(Member)
+      .set({ membership: fallback.code })
+      .where('club_id = :clubId', { clubId })
+      .andWhere('membership NOT IN (:...codes)', { codes: validCodes })
+      .execute();
   }
 
   async assertMemberReadable(actor: { user: AppUser; club: { id: number } }, memberId: number) {
