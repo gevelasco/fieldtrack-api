@@ -50,6 +50,27 @@ function resolveMemberFieldForHeader(
   return resolveMemberFieldFromHeader(header);
 }
 
+const MULTI_COLUMN_JOIN_FIELDS = new Set<MemberImportField>([
+  'phone',
+  'mobile',
+  'fullAddress',
+  'addressLine',
+]);
+
+function appendMappedFieldValue(current: string | undefined, next: string, field: MemberImportField): string {
+  if (!current) {
+    return next;
+  }
+  if (current === next || current.includes(next)) {
+    return current;
+  }
+  if (next.includes(current)) {
+    return next;
+  }
+  const separator = field === 'phone' || field === 'mobile' ? ' / ' : ' ';
+  return `${current}${separator}${next}`;
+}
+
 export function mapMemberRow(
   raw: Record<string, unknown>,
   columnMapping?: Readonly<Record<string, ImportFieldId>>,
@@ -64,12 +85,11 @@ export function mapMemberRow(
     if (!text) {
       continue;
     }
-    const key = field;
-    if (out[key] && (key === 'phone' || key === 'mobile')) {
-      out[key] = `${out[key]} / ${text}`;
+    if (MULTI_COLUMN_JOIN_FIELDS.has(field)) {
+      out[field] = appendMappedFieldValue(out[field], text, field);
       continue;
     }
-    out[key] = text;
+    out[field] = text;
   }
   return out;
 }

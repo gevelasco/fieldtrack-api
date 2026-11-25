@@ -6,6 +6,7 @@ import { AppUser } from '../users/entities/app-user.entity';
 import { UserPreferences } from '../users/entities/user-preferences.entity';
 import { ClubAccountController } from './club-account.controller';
 import { ClubAccountService } from './club-account.service';
+import { ClubHardResetService } from './club-hard-reset.service';
 import { ClubSettingsController } from './club-settings.controller';
 import { ClubSettingsService } from './club-settings.service';
 import { ClubStaffService } from './club-staff.service';
@@ -20,7 +21,7 @@ import { Club } from './entities/club.entity';
     forwardRef(() => MembersModule),
   ],
   controllers: [ClubSettingsController, ClubAccountController],
-  providers: [ClubSettingsService, ClubStaffService, ClubAccountService],
-  exports: [ClubSettingsService, ClubStaffService, ClubAccountService],
+  providers: [ClubSettingsService, ClubStaffService, ClubAccountService, ClubHardResetService],
+  exports: [ClubSettingsService, ClubStaffService, ClubAccountService, ClubHardResetService],
 })
 export class ClubsModule {}

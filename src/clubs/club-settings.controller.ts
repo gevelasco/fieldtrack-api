@@ -18,6 +18,7 @@ import { MembersImportService } from '../members/members-import.service';
 import { SessionService } from '../session/session.service';
 import { CreateClubStaffDto, UpdateClubStaffDto } from './dto/create-club-staff.dto';
 import { UpdateClubSettingsDto } from './dto/update-club-settings.dto';
+import { ClubHardResetService } from './club-hard-reset.service';
 import { ClubSettingsService } from './club-settings.service';
 import { ClubStaffService } from './club-staff.service';
 import { normalizeStaffModulePermissions, requireStaffModule } from './staff-module-permissions';
@@ -30,6 +31,7 @@ export class ClubSettingsController {
     private readonly staff: ClubStaffService,
     private readonly session: SessionService,
     private readonly memberImport: MembersImportService,
+    private readonly hardReset: ClubHardResetService,
   ) {}
 
   @Get('settings')
@@ -174,6 +176,20 @@ export class ClubSettingsController {
       'write',
     );
     return this.memberImport.importWeaponsFile(actor.club.id, actor.user, file?.buffer ?? Buffer.alloc(0));
+  }
+
+  @Post('hard-reset')
+  @ApiOperation({
+    summary:
+      'Reinicio total del club (solo admin): borra socios, armas, operación y staff; conserva controles y cuenta. Devuelve Excel de respaldo.',
+  })
+  async hardResetClub() {
+    const actor = await this.session.current();
+    const result = await this.hardReset.reset(actor.club.id, actor.user);
+    return new StreamableFile(result.workbook, {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      disposition: `attachment; filename="${result.filename}"`,
+    });
   }
 
   @Delete('staff/:id')

@@ -185,9 +185,36 @@ function startsNewMemberGroup(group: MemberGroup | null, memberNumber: string, c
   return !sameMemberKey(group, memberNumber, curp);
 }
 
+/** Si `incoming` tiene valor, reemplaza `current` (última fila gana). */
 function assignIfNonEmpty(current: string, incoming: string | undefined): string {
   const next = (incoming ?? '').trim();
   return next || current;
+}
+
+/** Conserva el primer valor no vacío (no pisar con filas posteriores del mismo socio). */
+function keepFirstNonEmpty(current: string, incoming: string | undefined): string {
+  if (current.trim()) {
+    return current;
+  }
+  return (incoming ?? '').trim();
+}
+
+/** Une fragmentos de dirección de varias columnas/filas sin perder partes previas. */
+function mergeAddressFragment(current: string, incoming: string | undefined): string {
+  const next = (incoming ?? '').trim();
+  if (!next) {
+    return current;
+  }
+  if (!current.trim()) {
+    return next;
+  }
+  if (current.includes(next)) {
+    return current;
+  }
+  if (next.includes(current)) {
+    return next;
+  }
+  return `${current} ${next}`;
 }
 
 function mergeWeapons(target: InlineWeaponSlot[], incoming: InlineWeaponSlot[]): void {
@@ -307,20 +334,21 @@ function newGroupFromRow(
 }
 
 function ingestAddressParts(group: MemberGroup, mapped: MappedMemberRow): void {
-  group.fullAddress = assignIfNonEmpty(group.fullAddress, mapped.fullAddress);
-  group.addressLine = assignIfNonEmpty(group.addressLine, mapped.addressLine);
-  group.colony = assignIfNonEmpty(group.colony, mapped.colony);
+  // Filas extra del mismo socio suelen traer solo DIRECCION_3; no deben pisar la dirección ya armada.
+  group.fullAddress = mergeAddressFragment(group.fullAddress, mapped.fullAddress);
+  group.addressLine = mergeAddressFragment(group.addressLine, mapped.addressLine);
+  group.colony = keepFirstNonEmpty(group.colony, mapped.colony);
 
   const cityRaw = (mapped.city ?? '').trim();
   if (cityRaw) {
     const split = splitStateAndZipBlob(cityRaw);
     if (split.state) {
-      group.state = assignIfNonEmpty(group.state, split.state);
-      group.zip = assignIfNonEmpty(group.zip, split.zip);
+      group.state = keepFirstNonEmpty(group.state, split.state);
+      group.zip = keepFirstNonEmpty(group.zip, split.zip);
     } else if (split.zip && !split.city) {
-      group.zip = assignIfNonEmpty(group.zip, split.zip);
+      group.zip = keepFirstNonEmpty(group.zip, split.zip);
     } else if (split.city) {
-      group.city = assignIfNonEmpty(group.city, split.city);
+      group.city = keepFirstNonEmpty(group.city, split.city);
     }
   }
 
@@ -328,14 +356,14 @@ function ingestAddressParts(group: MemberGroup, mapped: MappedMemberRow): void {
   if (stateRaw) {
     const split = splitStateAndZipBlob(stateRaw);
     if (split.state) {
-      group.state = assignIfNonEmpty(group.state, split.state);
-      group.zip = assignIfNonEmpty(group.zip, split.zip);
+      group.state = keepFirstNonEmpty(group.state, split.state);
+      group.zip = keepFirstNonEmpty(group.zip, split.zip);
     } else {
-      group.state = assignIfNonEmpty(group.state, stateRaw);
+      group.state = keepFirstNonEmpty(group.state, stateRaw);
     }
   }
 
-  group.zip = assignIfNonEmpty(group.zip, mapped.zip);
+  group.zip = keepFirstNonEmpty(group.zip, mapped.zip);
 }
 
 function resolveGroupedMemberAddress(group: MemberGroup): string {

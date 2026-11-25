@@ -162,9 +162,11 @@ const MEMBER_HEADER_RULES: HeaderFieldRule[] = [
   { field: 'fullAddress', allOf: [['direccion'], ['socio']], noneOf: ['club'], priority: 15 },
   { field: 'fullAddress', allOf: [['domicilio'], ['socio']], noneOf: ['club'], priority: 15 },
   { field: 'fullAddress', anyOf: ['direccion_completa', 'domicilio_completo', 'domicilio_del_socio'], priority: 14 },
+  /** DIRECCION / DIRECCION_2 / DIRECCION_3 → se concatenan en mapMemberRow. */
+  { field: 'fullAddress', anyOf: ['direccion_2', 'direccion_3', 'direccion2', 'direccion3', 'address_2', 'address_3'], priority: 13 },
   { field: 'fullAddress', anyOf: ['direccion', 'domicilio', 'address'], noneOf: ['club', 'calle', 'colonia', 'cp', 'estado', 'municipio'], priority: 7 },
 
-  { field: 'addressLine', anyOf: ['calle', 'calle_y_numero', 'domicilio', 'direccion'], noneOf: ['club', 'completo', 'completa', 'socio', 'colonia', 'cp'], priority: 6 },
+  { field: 'addressLine', anyOf: ['calle', 'calle_y_numero'], noneOf: ['club', 'completo', 'completa', 'socio', 'colonia', 'cp'], priority: 6 },
   { field: 'colony', anyOf: ['colonia', 'fraccionamiento', 'col', 'asentamiento'], priority: 9 },
   { field: 'city', anyOf: ['municipio', 'ciudad', 'localidad', 'delegacion'], priority: 9 },
   { field: 'state', anyOf: ['estado', 'entidad', 'entidad_federativa'], priority: 9 },
